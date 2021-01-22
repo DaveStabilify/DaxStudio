@@ -22,11 +22,18 @@ namespace DaxStudio.UI
     using DaxStudio.UI.Triggers;
     using DaxStudio.UI.Utils;
     using DaxStudio.UI.Events;
+    using DaxStudio.UI.Interfaces;
+    using DaxStudio.Interfaces;
+    using DaxStudio.UI.Model;
+    using MLib;
+    using MLib.Interfaces;
 
+#pragma warning disable CA1001 // Types that own disposable fields should be disposable
     public class AppBootstrapper : BootstrapperBase//<IShell>
-	{
+#pragma warning restore CA1001 // Types that own disposable fields should be disposable
+    {
 		CompositionContainer _container;
-	    private Assembly _hostAssembly;
+	    private readonly Assembly _hostAssembly;
         
 	    public AppBootstrapper(Assembly hostAssembly, bool useApplication) : base(useApplication)
 	    {
@@ -37,19 +44,24 @@ namespace DaxStudio.UI
         protected override void OnStartup(object sender, StartupEventArgs e)
         {
             AssemblyLoader.PreJitControls();
-            base.DisplayRootViewFor<IShell>(null);
+            
+        }
+
+        public void DisplayShell()
+        {
+            Application.Dispatcher.Invoke(() => base.DisplayRootViewFor<IShell>(null));
         }
 
         protected override void OnUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
             if (e.Exception is ArgumentOutOfRangeException)
             {
-                var st = new System.Diagnostics.StackTrace(e.Exception);
+                var st = new StackTrace(e.Exception);
                 var sf = st.GetFrame(0);
                 if (sf.GetMethod().Name == "GetLineByOffset")
                 {
-                    var _eventAggregator = _container.GetExportedValue<IEventAggregator>();
-                    if (_eventAggregator != null) _eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Warning, "Editor syntax highlighting attempted to scan byond the end of the current line"));
+                    var eventAggregator = _container.GetExportedValue<IEventAggregator>();
+                    if (eventAggregator != null) eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Warning, "Editor syntax highlighting attempted to scan byond the end of the current line"));
                     Log.Warning(e.Exception, "{class} {method} AvalonEdit TextDocument.GetLineByOffset: {message}", "EntryPoint", "Main", "Argument out of range exception");
                     e.Handled = true;
                     return;
@@ -89,13 +101,13 @@ namespace DaxStudio.UI
                 */
 
                 ConventionManager.AddElementConvention<Fluent.Spinner>(Fluent.Spinner.ValueProperty, "Value", "ValueChanged");
-                ConventionManager.AddElementConvention<Xceed.Wpf.Toolkit.DoubleUpDown>(Xceed.Wpf.Toolkit.DoubleUpDown.ValueProperty, "Value", "ValueChanged");
-                ConventionManager.AddElementConvention<Xceed.Wpf.Toolkit.IntegerUpDown>(Xceed.Wpf.Toolkit.IntegerUpDown.ValueProperty, "Value", "ValueChanged");
-                ConventionManager.AddElementConvention<Xceed.Wpf.Toolkit.WatermarkTextBox>(Xceed.Wpf.Toolkit.WatermarkTextBox.TextProperty, "Text", "TextChanged");
-                
 
-                // Fixes the default datetime format in the results listview
-                // from: http://stackoverflow.com/questions/1993046/datetime-region-specific-formatting-in-wpf-listview
+                // Add Fluent Ribbon resolver
+                BindingScope.AddChildResolver<Fluent.Ribbon>(FluentRibbonChildResolver);
+
+
+                // Fixes the default datetime format in the results ListView
+                // from: https://stackoverflow.com/questions/1993046/datetime-region-specific-formatting-in-wpf-listview
                 FrameworkElement.LanguageProperty.OverrideMetadata(
                     typeof(FrameworkElement),
                     new FrameworkPropertyMetadata(XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag)));
@@ -107,6 +119,9 @@ namespace DaxStudio.UI
                 _container = new CompositionContainer(catalog);
 	            var batch = new CompositionBatch();
 
+
+
+                
 	            batch.AddExportedValue<IWindowManager>(new WindowManager());
 	            batch.AddExportedValue<IEventAggregator>(new EventAggregator());
 	            batch.AddExportedValue<Func<DocumentViewModel>>(() => _container.GetExportedValue<DocumentViewModel>());
@@ -115,17 +130,29 @@ namespace DaxStudio.UI
 	            batch.AddExportedValue(_container);
 	            batch.AddExportedValue(catalog);
 
-	            _container.Compose(batch);
+                ISettingProvider settingProvider = SettingsProviderFactory.GetSettingProvider();
 
-	            // Add AvalonDock binding convetions
+                batch.AddExportedValue<ISettingProvider>(settingProvider);
+
+                // add support for MLib themes
+                batch.AddExportedValue<IAppearanceManager>(AppearanceManager.GetInstance());
+
+                _container.Compose(batch);
+
+	            // Add AvalonDock binding conventions
 	            AvalonDockConventions.Install();
 
-                ConfigureKeyBindings();
+                //var settingFactory = _container.GetExport<Func<ISettingProvider>>();
+
+                
+
+                ConfigureKeyBindingConvention();
 
 	            // TODO - not working
 	            //VisibilityBindingConvention.Install();
 
-	            LogManager.GetLog = type => new DebugLogger(type);
+                // Enable Caliburn.Micro debug logging
+	            //LogManager.GetLog = type => new DebugLogger(type);
 
                 // Add Application object to MEF catalog
                 _container.ComposeExportedValue<Application>("System.Windows.Application", Application.Current);
@@ -136,12 +163,22 @@ namespace DaxStudio.UI
 	        }
 		}
 
+        public IThemeManager GetThemeManager()
+        {
+            return GetInstance(typeof(IThemeManager), null) as IThemeManager;
+        }
+
         public IEventAggregator GetEventAggregator()
         {
             return GetInstance(typeof(IEventAggregator), null) as IEventAggregator;
         }
 
-		protected override object GetInstance(Type serviceType, string key)
+        public IGlobalOptions GetOptions()
+        {
+            return GetInstance(typeof(IGlobalOptions), null) as IGlobalOptions;
+        }
+
+        protected override object GetInstance(Type serviceType, string key)
 		{
 			var contract = string.IsNullOrEmpty(key) ? AttributedModelServices.GetContractName(serviceType) : key;
 			var exports = _container.GetExportedValues<object>(contract);
@@ -149,7 +186,7 @@ namespace DaxStudio.UI
 			if (exports.Any())
 				return exports.First();
 
-			throw new Exception(string.Format("Could not locate any instances of contract {0}.", contract));
+			throw new Exception($"Could not locate any instances of contract {contract}.");
 		}
 
 		protected override IEnumerable<object> GetAllInstances(Type serviceType)
@@ -165,15 +202,15 @@ namespace DaxStudio.UI
         // This override causes Caliburn Micro to pass this Assembly to MEF
         protected override IEnumerable<Assembly> SelectAssemblies()
         {
-            var type = typeof(DaxStudio.Interfaces.IDaxStudioHost);
-            var hostType = AppDomain.CurrentDomain.GetAssemblies().ToList()
+            var type = typeof(IDaxStudioHost);
+            var hostType = AppDomain.CurrentDomain.GetAssemblies()
+                .ToList()
                 .SelectMany(s => s.GetTypes())
-                .Where(p => type.IsAssignableFrom(p))
-                .FirstOrDefault();
+                .FirstOrDefault(p => type.IsAssignableFrom(p));
             var hostAssembly = Assembly.GetAssembly(hostType);
 
             return AssemblySource.Instance.Any() ?
-                new Assembly[] { } : 
+                Array.Empty<Assembly>() : 
                 new[] {
                     Assembly.GetExecutingAssembly()
                     ,hostAssembly
@@ -183,11 +220,9 @@ namespace DaxStudio.UI
         private Fluent.Ribbon LookForRibbon(DependencyObject k)
         {
             Fluent.Ribbon foundRibbon = null;
-            var contentControl = k as ContentControl;
-            if (null != contentControl)
+            if (k is ContentControl contentControl)
             {
-                var child = contentControl.Content as DependencyObject;
-                if (null != child)
+                if (contentControl.Content is DependencyObject child)
                 {
                     foundRibbon = child as Fluent.Ribbon;
                     if (null != foundRibbon)
@@ -201,7 +236,7 @@ namespace DaxStudio.UI
                             return foundRibbon;
                     }
                 }
-                    //return LookForRibbon(child);
+                //return LookForRibbon(child);
             }
             for (int i = 0; i < VisualTreeHelper.GetChildrenCount(k); ++i)
             {
@@ -232,7 +267,7 @@ namespace DaxStudio.UI
         //    }
         //}
 
-        private void ConfigureKeyBindings()
+        private void ConfigureKeyBindingConvention()
         {
             var trigger = Parser.CreateTrigger;
 
@@ -259,5 +294,33 @@ namespace DaxStudio.UI
             };
         }
 
-	}
+
+        static IEnumerable<System.Windows.DependencyObject> FluentRibbonChildResolver(Fluent.Ribbon ribbon)
+        {
+            /*
+            foreach (var ti in ribbon.Tabs)
+            {
+                foreach (var group in ti.Groups)
+                {
+                    foreach (var obj in BindingScope.GetNamedElements(group))
+                        yield return obj;
+                }
+            }
+            */
+            
+            var backstage = ribbon.Menu as Fluent.Backstage;
+            var backstageTabs = backstage.Content as Fluent.BackstageTabControl;
+            BindingScope.GetNamedElements(backstageTabs);
+
+            foreach (var backstageTab in backstageTabs.Items)
+            {
+                ///foreach (var obj in BindingScope.GetNamedElements(backstageTab))
+                if (backstageTab is ContentControl control)
+                    foreach (var obj in BindingScope.GetNamedElements(control))
+                        yield return obj;
+            }
+            
+            
+        }
+    }
 }

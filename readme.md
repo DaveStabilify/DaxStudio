@@ -1,6 +1,9 @@
 ## Build Status
-master: [![Master Build Status](https://ci.appveyor.com/api/projects/status/sl6fd3oelckihp3p?svg=true)]
-develop: [![Develop Build Status](https://ci.appveyor.com/api/projects/status/sl6fd3oelckihp3p/branch/develop?svg=true)]
+
+| Branch | Status |
+|---|---|
+| master | ![Master Build Status](https://ci.appveyor.com/api/projects/status/sl6fd3oelckihp3p?svg=true) |
+| develop | ![Develop Build Status](https://ci.appveyor.com/api/projects/status/sl6fd3oelckihp3p/branch/develop?svg=true) ![](https://img.shields.io/appveyor/tests/darrengosbell/daxstudio/develop.svg?style=flat-square) |
 
 ## Building Dax Studio
 
@@ -11,6 +14,8 @@ When preparing to make changes in order to submit a pull request you should crea
 branch off the `develop` branch. The develop branch contains the current development build of the code
 including any new features. The master branch only contains the code for the last stable release. 
 (we merge from develop to master when doing a public release)
+
+For details about [debugging](debugging)
 
 ## Editing the documentation locally
 
@@ -36,5 +41,5 @@ Once you have the above dependencies installed,
 the following commands will run the DAX Studio site locally:
 ```
 cd /mnt/c/<folder with DaxStudio git repo>/docs
-Bundler exec jekyll serve -w
+bundler exec jekyll serve -w
 ```

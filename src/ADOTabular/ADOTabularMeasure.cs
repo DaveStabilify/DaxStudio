@@ -1,5 +1,5 @@
-﻿using System;
-using System.Data;
+﻿using ADOTabular.Interfaces;
+using System;
 
 namespace ADOTabular
 {
@@ -21,7 +21,7 @@ namespace ADOTabular
 
         public string InternalReference { get; private set; }
 
-        public ADOTabularColumnType ColumnType { get; internal set; }
+        public ADOTabularObjectType ObjectType { get; internal set; }
 
         public ADOTabularTable Table { get; private set; }
 
@@ -31,14 +31,13 @@ namespace ADOTabular
 
         public string Contents { get; private set; }
 
-        public string DisplayFolder { get; private set; }
         public virtual string DaxName {
             get
             {
                 // for measures we exclude the table name
-                return ColumnType == ADOTabularColumnType.Column  
-                    ? string.Format("{0}[{1}]", Table.DaxName, Name)
-                    : string.Format("[{0}]",Name);
+                return ObjectType == ADOTabularObjectType.Column  
+                    ? $"{Table.DaxName}[{Name}]"
+                    : $"[{Name}]";
             }
         }
 
@@ -52,12 +51,8 @@ namespace ADOTabular
 
         public string Expression { get; set; }
 
-        public MetadataImages MetadataImage
-        {
-            get
-            {
-                return MetadataImages.Measure;
-            }
-        }
+        public static MetadataImages MetadataImage => MetadataImages.Measure;
+
+
     }
 }

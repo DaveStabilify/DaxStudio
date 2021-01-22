@@ -1,14 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
 namespace DaxStudio.Common
 {
-    public class WindowTitle
+    public static class WindowTitle
     {
 
 
@@ -23,36 +22,11 @@ namespace DaxStudio.Common
 
 
 
-        #region PInvoke calls to get the window title of a minimize window
-
-        delegate bool EnumThreadDelegate(IntPtr hWnd, IntPtr lParam);
-
-        [DllImport("user32.dll")]
-        static extern bool IsWindowVisible(IntPtr hWnd);
-
-
-        [DllImport("user32.dll")]
-        static extern bool EnumThreadWindows(int dwThreadId, EnumThreadDelegate lpfn,
-            IntPtr lParam);
-
-        [DllImport("User32.dll", SetLastError = true)]
-        public unsafe static extern int SendMessageTimeout(
-            IntPtr hWnd,
-            uint uMsg,
-            uint wParam,
-            StringBuilder lParam,
-            uint fuFlags,
-            uint uTimeout,
-            void* lpdwResult);
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto)]
-        static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, int wParam,
-            StringBuilder lParam);
 
         const int WM_GETTEXT = 0x000D;
         const int WM_GETTEXTLENGTH = 0x000E;
 
-        #endregion
+
 
 
         private static IEnumerable<IntPtr> EnumerateProcessWindowHandles(int processId)
@@ -60,22 +34,23 @@ namespace DaxStudio.Common
             var handles = new List<IntPtr>();
 
             foreach (ProcessThread thread in Process.GetProcessById(processId).Threads)
-                EnumThreadWindows(thread.Id,
+                NativeMethods.EnumThreadWindows(thread.Id,
                     (hWnd, lParam) => { handles.Add(hWnd); return true; }, IntPtr.Zero);
 
             return handles;
         }
 
-        
-        private static string GetWindowTitle(int procId)
+
+        public static string GetWindowTitle(int procId)
         {
             foreach (var handle in EnumerateProcessWindowHandles(procId))
             {
                 StringBuilder message = new StringBuilder(1000);
-                if (IsWindowVisible(handle))
+                if (NativeMethods.IsWindowVisible(handle))
                 {
-                    SendMessage(handle, WM_GETTEXT, message.Capacity, message);
-                    if (message.Length > 0) return message.ToString();
+                    //SendMessage(handle, WM_GETTEXT, message.Capacity, message);
+                    //if (message.Length > 0) return message.ToString();
+                    return GetCaptionOfWindow(handle);
                 }
 
             }
@@ -89,9 +64,20 @@ namespace DaxStudio.Common
             string title = "";
             foreach (var handle in EnumerateProcessWindowHandles(procId))
             {
-                title = GetWindowTextTimeout(handle, timeout);
+                try
+                {
+                    // if there is an issue with the window handle we just
+                    // ignore it and skip to the next one in the collection
+                    title = GetWindowTextTimeout(handle, timeout);
+                }
+#pragma warning disable CA1031
+                catch (Exception)
+#pragma warning restore CA1031
+                {
+                    title = "";
+                }
                 if (title.Length > 0) return title;
-            }
+                }
             return title;
         }
 
@@ -99,7 +85,7 @@ namespace DaxStudio.Common
         private static unsafe string GetWindowTextTimeout(IntPtr hWnd, uint timeout)
         {
             int length;
-            if (SendMessageTimeout(hWnd, WM_GETTEXTLENGTH, 0, null, 2, timeout, &length) == 0)
+            if (NativeMethods.SendMessageTimeout(hWnd, WM_GETTEXTLENGTH, 0, null, 2, timeout, &length) == 0)
             {
                 return null;
             }
@@ -109,7 +95,7 @@ namespace DaxStudio.Common
             }
 
             StringBuilder sb = new StringBuilder(length + 1);  // leave room for null-terminator
-            if (SendMessageTimeout(hWnd, WM_GETTEXT, (uint)sb.Capacity, sb, 2, timeout, null) == 0)
+            if (NativeMethods.SendMessageTimeout(hWnd, WM_GETTEXT, (uint)sb.Capacity, sb, 2, timeout, null) == 0)
             {
                 return null;
             }
@@ -117,5 +103,67 @@ namespace DaxStudio.Common
             return sb.ToString();
         }
 
+        private static string GetCaptionOfWindow(IntPtr hwnd)
+        {
+            string caption = "";
+            StringBuilder windowText;
+            try
+            {
+                int max_length = NativeMethods.GetWindowTextLength(hwnd);
+                windowText = new StringBuilder("", max_length + 5);
+                NativeMethods.GetWindowText(hwnd, windowText, max_length + 2);
+
+                if (!String.IsNullOrEmpty(windowText.ToString()) && !String.IsNullOrWhiteSpace(windowText.ToString()))
+                    caption = windowText.ToString();
+            }
+#pragma warning disable CA1031
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                caption = ex.Message;
+            }
+            finally
+            {
+                windowText = null;
+            }
+            return caption;
+        }
+
+    }
+
+    internal static class NativeMethods
+    {
+
+        internal delegate bool EnumThreadDelegate(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        internal static extern bool IsWindowVisible(IntPtr hWnd);
+
+
+        [DllImport("user32.dll")]
+        internal static extern bool EnumThreadWindows(int dwThreadId, EnumThreadDelegate lpfn,
+            IntPtr lParam);
+
+#pragma warning disable CA1838 // Avoid 'StringBuilder' parameters for P/Invokes
+        [DllImport("User32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        internal unsafe static extern int SendMessageTimeout(
+            IntPtr hWnd,
+            uint uMsg,
+            uint wParam,
+            StringBuilder lParam,
+            uint fuFlags,
+            uint uTimeout,
+            void* lpdwResult);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        internal static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, int wParam,
+            StringBuilder lParam);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        internal static extern int GetWindowTextLength(IntPtr hWnd);
+
+        [DllImport("User32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        internal static extern long GetWindowText(IntPtr hwnd, StringBuilder lpString, long cch);
+#pragma warning restore CA1838 // Avoid 'StringBuilder' parameters for P/Invokes
     }
 }

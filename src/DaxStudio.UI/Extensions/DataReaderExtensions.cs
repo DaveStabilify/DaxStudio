@@ -1,11 +1,12 @@
 ﻿using DaxStudio.Common;
+using DaxStudio.Interfaces;
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Globalization;
+using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
 namespace DaxStudio.UI.Extensions
 {
@@ -39,26 +40,26 @@ namespace DaxStudio.UI.Extensions
             //                    select col).Count() > 0;
             bool isMdxResult = (from col in columns
                                 where mdxPattern.IsMatch(col)
-                                select col).Count() > 0;
+                                select col).Any();
 
             var measuresColumns = (from col in columns
-                                   where col.IndexOf(MEASURES_MDX) >= 0
+                                   where col.IndexOf(MEASURES_MDX, StringComparison.OrdinalIgnoreCase) >= 0
                                    select col);
-            bool hasPlainMeasures = (from col in measuresColumns
-                                     where col.IndexOf("].[", col.IndexOf(MEASURES_MDX) + MEASURES_MDX.Length) > 0
-                                     select col).Count() == 0;
+            bool hasPlainMeasures = !(from col in measuresColumns
+                                      where col.IndexOf("].[", col.IndexOf(MEASURES_MDX, StringComparison.OrdinalIgnoreCase) + MEASURES_MDX.Length, StringComparison.OrdinalIgnoreCase) > 0
+                                      select col).Any();
             foreach (string columnName in columns)
             {
                 bool removeCaption = false;
                 string name = columnName;
                 bool removeSquareBrackets = !isMdxResult;
-                int measuresMdxPos = name.IndexOf(MEASURES_MDX);// + MEASURES_MDX.Length;
+                int measuresMdxPos = name.IndexOf(MEASURES_MDX, StringComparison.OrdinalIgnoreCase);// + MEASURES_MDX.Length;
                 if (isMdxResult)
                 {
                     if ((measuresMdxPos >= 0))
                     {
-                        if ((name.IndexOf("].[", measuresMdxPos + MEASURES_MDX.Length) == -1)
-                        && (name.IndexOf("].[", 0) == MEASURES_MDX.Length - 2))
+                        if ((name.IndexOf("].[", measuresMdxPos + MEASURES_MDX.Length, StringComparison.OrdinalIgnoreCase) == -1)
+                        && (name.IndexOf("].[", 0, StringComparison.OrdinalIgnoreCase) == MEASURES_MDX.Length - 2))
                         {
                             removeSquareBrackets = true;
                         }
@@ -86,7 +87,8 @@ namespace DaxStudio.UI.Extensions
                     //OriginalCaption = col.Caption,
                     OriginalName = columnName,
                     //NewCaption = (removeCaption) ? "" : name,
-                    NewName = name.Replace(' ', '`').Replace(',', '`'),
+                    //NewName = name.Replace(' ', '`').Replace(',', '`'),
+                    NewName = name,
                 };
                 newColumnNames.Add(dc.OriginalName, dc);
                 //col.Caption = (removeCaption) ? "" : name;
@@ -118,7 +120,7 @@ namespace DaxStudio.UI.Extensions
 
 
 
-        public static DataSet ConvertToDataSet(this ADOTabular.AdomdClientWrappers.AdomdDataReader reader, bool autoFormat = false)
+        public static DataSet ConvertToDataSet(this ADOTabular.AdomdClientWrappers.AdomdDataReader reader, bool autoFormat, bool IsSessionsDmv, string autoDateFormat)
         {
             ADOTabular.ADOTabularColumn daxCol;
             DataSet ds = new DataSet();
@@ -136,21 +138,28 @@ namespace DaxStudio.UI.Extensions
                     foreach (DataRow row in dtSchema.Rows)
                     {
                         string columnName = Convert.ToString(row["ColumnName"]);
-                        DataColumn column = new DataColumn(columnName, (Type)(row["DataType"]));
-                        column.Unique = (bool)row[Constants.IS_UNIQUE];
-                        column.AllowDBNull = (bool)row[Constants.ALLOW_DBNULL];
-                        //column.AutoIncrement = (bool)drow["IsAutoIncrement"];
+                        Type columnType = (Type)row["DataType"];
+                        if (columnType.Name == "XmlaDataReader") columnType = typeof(string);
+                        DataColumn column = new DataColumn(columnName, columnType); // (Type)(row["DataType"]));
+                        column.Unique = (bool)row[Constants.IsUnique];
+                        column.AllowDBNull = (bool)row[Constants.AllowDbNull];
                         daxCol = null;
                         reader.Connection.Columns.TryGetValue(columnName, out daxCol);
-                        if (daxCol != null) {
-                            column.ExtendedProperties.Add(Constants.FORMAT_STRING, daxCol.FormatString);
-                            if (localeId != 0) column.ExtendedProperties.Add(Constants.LOCALE_ID, localeId);
+                        if (IsSessionsDmv && columnName == Common.Constants.SessionSpidColumn)
+                        {
+                            column.ExtendedProperties.Add(Constants.SessionSpidColumn, true);
+                        }
+                        if (daxCol != null && !string.IsNullOrEmpty(daxCol.FormatString)) {
+                            column.ExtendedProperties.Add(Constants.FormatString, daxCol.FormatString);
+                            if (localeId != 0) column.ExtendedProperties.Add(Constants.LocaleId, localeId);
                         }
                         else if (autoFormat) {
                             string formatString;
                             switch (column.DataType.Name)
                             {
+                                case "Decimal":
                                 case "Double":
+                                case "Object":
                                     if (column.Caption.Contains(@"%") || column.Caption.Contains("Pct")) {
                                         formatString = "0.00%";
                                     }
@@ -161,12 +170,15 @@ namespace DaxStudio.UI.Extensions
                                 case "Int64":
                                     formatString = "#,0";
                                     break;
-                                case "Decimal":
-                                    if (column.Caption.Contains(@"%") || column.Caption.Contains("Pct")) {
-                                        formatString = "0.00%";
+                                case "DateTime":
+                                    if (string.IsNullOrWhiteSpace(autoDateFormat)
+                                        || column.Caption.ToLower().Contains(@"time") 
+                                        || column.Caption.ToLower().Contains(@"hour") ) {
+                                        formatString = null;
                                     }
-                                    else {
-                                        formatString = "#,0.00";
+                                    else
+                                    {
+                                        formatString = "yyyy-MM-dd";
                                     }
                                     break;
                                 default:
@@ -174,8 +186,8 @@ namespace DaxStudio.UI.Extensions
                                     break;
                             }
                             if (formatString != null) {
-                                column.ExtendedProperties.Add(Constants.FORMAT_STRING, formatString);
-                                if (localeId != 0) column.ExtendedProperties.Add(Constants.LOCALE_ID, localeId);
+                                column.ExtendedProperties.Add(Constants.FormatString, formatString);
+                                if (localeId != 0) column.ExtendedProperties.Add(Constants.LocaleId, localeId);
                             }
                         }
                         listCols.Add(column);
@@ -189,7 +201,10 @@ namespace DaxStudio.UI.Extensions
                     DataRow dataRow = dt.NewRow();
                     for (int i = 0; i < listCols.Count; i++)
                     {
-                        dataRow[((DataColumn)listCols[i])] = reader[i] ?? DBNull.Value;
+                        if (reader.IsDataReader(i))
+                            dataRow[((DataColumn)listCols[i])] = reader.GetDataReaderValue(i); 
+                        else
+                            dataRow[((DataColumn)listCols[i])] = reader[i] ?? DBNull.Value;
                     }
                     dt.Rows.Add(dataRow);
                 }
@@ -200,6 +215,75 @@ namespace DaxStudio.UI.Extensions
             }
             return ds;
 
+        }
+
+        /// <summary>
+        /// Writes a DataTable object to a StreamWriter
+        /// </summary>
+        /// <param name="reader"></param>
+        /// <param name="textWriter"></param>
+        /// <param name="sep"></param>
+        /// <param name="shouldQuoteStrings"></param>
+        /// <param name="isoDateFormat"></param>
+        /// <param name="statusProgress"></param>
+        /// <returns></returns>
+        public static int WriteToStream(this ADOTabular.AdomdClientWrappers.AdomdDataReader reader, TextWriter textWriter, string sep, bool shouldQuoteStrings, string isoDateFormat, IStatusBarMessage statusProgress)
+        {
+
+            int iMaxCol = reader.FieldCount - 1;
+            int iRowCnt = 0;
+
+            using (var csvWriter = new CsvHelper.CsvWriter(textWriter, CultureInfo.InvariantCulture))
+            {
+                // CSV Writer config
+
+                csvWriter.Configuration.Delimiter = sep;
+
+                // Datetime as ISOFormat
+
+                csvWriter.Configuration.TypeConverterOptionsCache.AddOptions(
+                    typeof(DateTime),
+                    new CsvHelper.TypeConversion.TypeConverterOptions() { Formats = new string[] { isoDateFormat } });
+
+                // write out clean column names
+
+                foreach (var colName in reader.CleanColumnNames())
+                {
+                    csvWriter.WriteField(colName);
+                }
+
+                csvWriter.NextRecord();
+
+                while (reader.Read())
+                {
+                    iRowCnt++;
+
+                    for (int iCol = 0; iCol < reader.FieldCount; iCol++)
+                    {
+                        var fieldValue = reader[iCol];
+
+                        // quote all string fields
+                        if (reader.GetFieldType(iCol) == typeof(string))
+                            if (reader.IsDBNull(iCol))
+                                csvWriter.WriteField("", shouldQuoteStrings);
+                            else
+                                csvWriter.WriteField(fieldValue.ToString(), shouldQuoteStrings);
+                        else
+                            csvWriter.WriteField(fieldValue);
+                    }
+
+                    csvWriter.NextRecord();
+
+                    if (iRowCnt % 1000 == 0)
+                    {
+                        statusProgress.Update($"Written {iRowCnt:n0} rows to the file output");
+                    }
+
+                }
+
+            }
+
+            return iRowCnt;
         }
     }
 }

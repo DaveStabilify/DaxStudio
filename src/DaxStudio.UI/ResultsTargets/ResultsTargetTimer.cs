@@ -22,26 +22,28 @@ namespace DaxStudio.UI.Model
         public bool IsAvailable => true;
         public int DisplayOrder => 20;
         public string Message => "Query timings sent to output tab";
-        public OutputTargets Icon => OutputTargets.Timer;
-
+        public OutputTarget Icon => OutputTarget.Timer;
+        public string Tooltip => "Runs the query and discards the results recording the time taken";
         public bool IsEnabled => true;
 
         public string DisabledReason => "";
         #endregion
 
-        private void OutputResults(IQueryRunner runner)
+        public async Task OutputResultsAsync(IQueryRunner runner, IQueryTextProvider textProvider)
         {
             try
             {
                 runner.OutputMessage("Query Started");
                 var sw = Stopwatch.StartNew();
-                var dq = runner.QueryText;
-                var res = runner.ExecuteDataTableQuery(dq);
+
+                var dq = textProvider.QueryText;
+                var res = await runner.ExecuteDataTableQueryAsync(dq);
+
                 sw.Stop();
                 var durationMs = sw.ElapsedMilliseconds;
                 runner.OutputMessage(string.Format("Query Completed ({0:N0} row{1} returned)", res.Rows.Count, res.Rows.Count == 1 ? "" : "s"), durationMs);
                 runner.RowCount = res.Rows.Count;
-                runner.SetResultsMessage("Query timings sent to output tab", OutputTargets.Timer);
+                runner.SetResultsMessage("Query timings sent to output tab", OutputTarget.Timer);
                 //runner.QueryCompleted();
                 runner.ActivateOutput();
             }
@@ -54,11 +56,6 @@ namespace DaxStudio.UI.Model
             {
                 runner.QueryCompleted();
             }
-        }
-
-        public Task OutputResultsAsync(IQueryRunner runner)
-        {
-            return Task.Run(() => OutputResults(runner));
         }
 
     }

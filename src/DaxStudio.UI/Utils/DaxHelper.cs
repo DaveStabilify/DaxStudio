@@ -13,13 +13,13 @@ namespace DaxStudio.UI.Utils
     {
         // detects a parameter
         //const string paramRegex = @"(?:@)(?<name>[^\[\]\s,=]*\b+(?![^\[]*\]))";
-        const string paramRegex = @"\[[^\]]*\](?# ignore column names)|'[^']*'(?# ignore tables names)|""[^""]*""(?# ignore strings)|(?:@)(?<name>[^\[\]\s,=]*\b+(?![^\[]*\]))";
+        const string paramRegex = @"\[[^\]]*\](?# ignore column names)|'[^']*'(?# ignore tables names)|""[^""]*""(?# ignore strings)|(?:@)(?<name>[^\[\]\);\s,=]*\b+(?![^\[]*\]))";
         const string commentRegex = @"\/\*(\*(?!\/)|[^*])*\*\/|(//.*)|(--.*)";
         private static Regex rexComments = new Regex(commentRegex, RegexOptions.Compiled | RegexOptions.Multiline);
         private static Regex rexParams = new Regex(paramRegex, RegexOptions.Compiled);
 
         const string startRegex = "@";//(?<=@)";
-        const string endRegex = @"(?=[\s|,|\)|$])";
+        const string endRegex = @"(?=[\s,\),;,\,,//,--,\\\\}]|$)";
         
         public static void PreProcessQuery(QueryInfo queryInfo, string query, IEventAggregator eventAggregator)
         {
@@ -35,7 +35,7 @@ namespace DaxStudio.UI.Utils
                     sbParams.Append(line);
                 else {
                     sbQuery.Append(line);
-                    sbQuery.Append("\n");
+                    sbQuery.Append('\n');
                 }
 
                 if (line.Trim().EndsWith("</Parameters>")) inParams = false;

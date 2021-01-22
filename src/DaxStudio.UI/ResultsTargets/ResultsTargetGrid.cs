@@ -33,19 +33,20 @@ namespace DaxStudio.UI.Model
         public bool IsDefault => true;
         public bool IsAvailable => true;
         public string Message => string.Empty;
-        public OutputTargets Icon => OutputTargets.Grid;
-
+        public OutputTarget Icon => OutputTarget.Grid;
+        public string Tooltip => "Displays the Query results in a data grid";
         public bool IsEnabled => true;
 
         public string DisabledReason => "";
         #endregion
 
         // This is the core method that handles the output of the results
-        public Task OutputResultsAsync(IQueryRunner runner)
+        public async Task OutputResultsAsync(IQueryRunner runner, IQueryTextProvider textProvider)
         {
             // Read the AutoFormat option from the options singleton
             bool autoFormat = _options.ResultAutoFormat;
-            return Task.Run(() =>
+            string autoDateFormat = _options.DefaultDateAutoFormat;
+            await Task.Run(() =>
                 {
                     long durationMs = 0;
                     int queryCnt = 1;
@@ -54,17 +55,25 @@ namespace DaxStudio.UI.Model
                         runner.OutputMessage("Query Started");
                         var sw = Stopwatch.StartNew();
 
-                        var dq = runner.QueryText;
+                        var dq = textProvider.QueryText;
                         //var res = runner.ExecuteDataTableQuery(dq);
+                        var isSessionsDmv = dq.Contains(Common.Constants.SessionsDmv, StringComparison.OrdinalIgnoreCase);
+
+
                         using (var dataReader = runner.ExecuteDataReaderQuery(dq))
                         {
                             if (dataReader != null)
                             {
                                 Log.Verbose("Start Processing Grid DataReader (Elapsed: {elapsed})" , sw.ElapsedMilliseconds);
-                                runner.ResultsDataSet = dataReader.ConvertToDataSet(autoFormat);
+                                runner.ResultsDataSet = dataReader.ConvertToDataSet(autoFormat, isSessionsDmv, autoDateFormat);
                                 Log.Verbose("End Processing Grid DataReader (Elapsed: {elapsed})", sw.ElapsedMilliseconds);
 
                                 sw.Stop();
+
+                                // add extended properties to DataSet
+                                runner.ResultsDataSet.ExtendedProperties.Add("QueryText", dq);
+                                runner.ResultsDataSet.ExtendedProperties.Add("IsDiscoverSessions", isSessionsDmv);
+
                                 durationMs = sw.ElapsedMilliseconds;
                                 var rowCnt = runner.ResultsDataSet.Tables[0].Rows.Count;
                                 foreach (DataTable tbl in runner.ResultsDataSet.Tables)
@@ -80,17 +89,17 @@ namespace DaxStudio.UI.Model
                                 runner.OutputMessage("Query Batch Completed", durationMs);
                             }
                             else
-                                runner.OutputError("Query Batch Completed with errors", durationMs);
+                                runner.OutputError("Query Batch Completed with errors listed above (you may need to scroll up)", durationMs);
 
                         }
                         
                     }
                     catch (Exception ex)
                     {
-                        Log.Error("{class} {method} {message} {stacktrace}", "ResultsTargetGrid","OutputQueryResultsAsync",ex.Message, ex.StackTrace);
+                        Log.Error("{class} {method} {message} {stacktrace}", nameof(ResultsTargetGrid),nameof(OutputResultsAsync),ex.Message, ex.StackTrace);
                         runner.ActivateOutput();
                         runner.OutputError(ex.Message);
-                        runner.OutputError("Query Batch Completed with erros", durationMs);
+                        runner.OutputError("Query Batch Completed with errors listed above (you may need to scroll up)", durationMs);
                     }
                     finally
                     {

@@ -1,19 +1,19 @@
-﻿using System;
-using System.Text.RegularExpressions;
+﻿using ADOTabular.Interfaces;
+using System;
+using System.Globalization;
 
 namespace ADOTabular
 {
     public class ADOTabularDatabase
     {
         private ADOTabularModelCollection _modelColl;
-        private DateTime? _lastUpdate = null;
 
-        public ADOTabularDatabase(ADOTabularConnection adoTabConn, string databaseName, string databaseId, DateTime lastUpdate, string compatLevel, string roles)
+        public ADOTabularDatabase(IADOTabularConnection adoTabConn, string databaseName, string databaseId, DateTime lastUpdate, string compatLevel, string roles)
         {
             Connection = adoTabConn;
             Name = databaseName;
             Id = databaseId;
-            _lastUpdate = lastUpdate;
+            LastUpdate = lastUpdate;
             CompatibilityLevel = compatLevel;
             Roles = roles;
         }
@@ -25,9 +25,9 @@ namespace ADOTabular
                 var ddColl = Connection.Databases.GetDatabaseDictionary(Connection.SPID, true);
                 if (ddColl.Count == 0) return false; // no databases on server
                 var dd = ddColl[Name];
-                if (dd.LastUpdate > _lastUpdate)
+                if (dd.LastUpdate > LastUpdate)
                 {
-                    _lastUpdate = dd.LastUpdate;
+                    LastUpdate = dd.LastUpdate;
                     return true;
                 }
             }
@@ -36,25 +36,21 @@ namespace ADOTabular
                 // do nothing - probably trying to check for changes while query is still running
                 System.Diagnostics.Debug.WriteLine("HasSchemaChanged Error: {0}", ex.Message);
             }
-            catch (Exception)
-            {
-                throw;
-            }
+
             return false;
         }
 
+        public string Culture { get; internal set; } = string.Empty;
         public string Id { get; }
+        public DateTime LastUpdate { get; internal set; } = DateTime.MinValue;
 
         public string Name { get;
         //get { return _adoTabConn.PowerBIFileName == string.Empty? _databaseName: _adoTabConn.PowerBIFileName; }
         }
 
-        public ADOTabularModelCollection Models
-        {
-            get { return _modelColl ?? (_modelColl = new ADOTabularModelCollection(Connection, this)); }
-        }
+        public ADOTabularModelCollection Models => _modelColl ??= new ADOTabularModelCollection(Connection, this);
 
-        public ADOTabularConnection Connection { get; }
+        public IADOTabularConnection Connection { get; }
 
         public string CompatibilityLevel { get; }
 
@@ -68,7 +64,7 @@ namespace ADOTabular
 
         public void ClearCache()
         {
-            Connection.ExecuteCommand(String.Format(@"
+            Connection.ExecuteCommand(string.Format(CultureInfo.InvariantCulture, @"
                 <Batch xmlns=""http://schemas.microsoft.com/analysisservices/2003/engine"">
                    <ClearCache>
                      <Object>
@@ -90,10 +86,8 @@ namespace ADOTabular
 
         //}
 
-        public MetadataImages MetadataImage
-        {
-            get { return MetadataImages.Database; }
-        }
+        public static MetadataImages MetadataImage => MetadataImages.Database;
+
 
     }
 }

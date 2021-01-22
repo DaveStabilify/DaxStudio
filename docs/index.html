@@ -9,27 +9,54 @@ js-footer: "/js/index-footer.js"
 
 {% assign download = site.github.latest_release %}
 
+{% assign exe_assets = download.assets | where_exp: "item", "item.browser_download_url contains '.exe'" %}
+{% assign installer = exe_assets[0] %}
+{% assign zip_assets = download.assets | where_exp: "item", "item.browser_download_url contains '.zip'" %}
+{% assign portable = zip_assets[0] %}
+
+<!-- Installer Download link -->
 <div class="main-explain-area jumbotron center">
   <div class="centered">
     <div style="padding-bottom:10px">Download the latest release of DAX Studio here:</div>
-{% if download.browser_download_url != ''  %}    
-    <a href="{{ download.assets[0].browser_download_url }}">
+  
+    <a href="{{ installer.browser_download_url }}">
       <button class="btn btn-lg btn-success"> 
-        <h3><i class="fa fa-download"></i>&nbsp; {{download.name}} </h3>
+        <h3><i class="fa fa-download"></i>&nbsp; {{download.name}}</h3>
+        <div>(installer)</div>
       </button>
     </a>
-    {% assign download_count = download.assets[0].download_count %}
-    {% assign download_size = download.assets[0].size %}
+    {% assign download_count = installer.download_count %}
+    {% assign download_size = installer.size %}
     <div class="download-info">
-      <i class="fa fa-download" title="downloads"></i><span>Size: {% include filesize.html number=download_size %} | </span>
-      <i class="fa fa-calendar" title="release date"></i><span>{% if download.assets[0].created_at != nil %}{{ download.assets[0].created_at | date_to_string }} {% else %}N/A{% endif %} </span>
+      <i class="fa fa-download" title="downloads"></i> <span>Size: {% include filesize.html number=download_size %} | </span>
+      <i class="fa fa-calendar" title="release date"></i><span>{% if installer.created_at != nil %}{{ installer.created_at | date_to_string }} {% else %}N/A{% endif %} </span>
       <span id="download_cnt"></span> 
     </div>
-{% else %}
-    <div>Sorry, but we are not able to get the latest release information from github at this time</div>
-{% endif %}
   </div>
 </div>
+
+<!-- Portable Version download link -->
+
+  {% if portable != nil  %}  
+  <div class="centered">
+
+    <a href="{{ portable.browser_download_url }}">
+      
+        <div><i class="fa fa-download"></i>&nbsp; {{download.name}} (portable)</div>
+      
+    </a>
+    {% assign download_count_1 = portable.download_count %}
+    {% assign download_size_1 = portable.size %}
+    <div class="download-info">
+      <i class="fa fa-download" title="downloads"></i> <span>Size: {% include filesize.html number=download_size_1 %} | </span>
+      <i class="fa fa-calendar" title="release date"></i>&nbsp;<span>{% if portable.created_at != nil %}{{ portable.created_at | date_to_string }} {% else %}N/A{% endif %} </span>
+      <span id="download_cnt_zip"></span> 
+    </div>
+  </div>
+
+{% endif %}
+
+
 
 <div>DAX Studio is the ultimate tool for executing and analyzing DAX queries against Microsoft Tabular models</div>
 
@@ -109,6 +136,11 @@ js-footer: "/js/index-footer.js"
   <div class="col-lg-2 pull-left"><i class="fa fa-question-circle" style="font-size: 48pt"></i></div> 
   <div class="col-lg-10">If you have an idea for a feature that you would like to see in DAX Studio submit your idea to our <a href="/issues">issues register</a></div>
 </div>
+<hr>
+<div class="row">
+  <div class="col-lg-2 pull-left"><i class="fa fa-cogs" style="font-size: 48pt"></i></div> 
+  <div class="col-lg-10">Will DAX Studio run on your machine? Probably, but you can double check the <a href="/documentation/Requirements">Requirements</a> for running DAX Studio</div>
+</div>
 
 {% if posts.size > 0 %}
 <!-- Recent Announcements -->
@@ -136,4 +168,4 @@ js-footer: "/js/index-footer.js"
 </div>
 
 {% endif %}
-<!-- 2.8.1. -->
+<!-- 2.14.0.477 -->

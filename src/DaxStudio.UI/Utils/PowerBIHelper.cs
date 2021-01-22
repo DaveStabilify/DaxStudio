@@ -5,7 +5,6 @@ using Serilog;
 using DaxStudio.UI.Extensions;
 using System.Security.Principal;
 using DaxStudio.Common;
-using System.Threading.Tasks;
 
 namespace DaxStudio.UI.Utils
 {
@@ -14,7 +13,8 @@ namespace DaxStudio.UI.Utils
         PowerBI,
         Devenv,
         PowerBIReportServer,
-        Loading
+        Loading,
+        None
     }
     public class PowerBIInstance
     {
@@ -29,7 +29,10 @@ namespace DaxStudio.UI.Utils
                 { Name = name.Substring(0, dashPos); }  // Strip "Power BI Designer" or "Power BI Desktop" off the end of the string
                 else
                 {
-                    Log.Warning("{class} {method} {message} {dashPos}", "PowerBIInstance", "ctor", "Unable to find ' - ' in Power BI title", dashPos);
+                    if (port != -1)
+                    {
+                        Log.Warning("{class} {method} {message} {dashPos}", "PowerBIInstance", "ctor", $"Unable to find ' - ' in Power BI title '{name}'", dashPos);
+                    }
                     Name = name; 
                 }
             }
@@ -48,7 +51,7 @@ namespace DaxStudio.UI.Utils
     public class PowerBIHelper
     {
     
-        public static List<PowerBIInstance> GetLocalInstances()
+        public static List<PowerBIInstance> GetLocalInstances(bool includePBIRS)
         {
             List<PowerBIInstance> _instances = new List<PowerBIInstance>();
 
@@ -58,34 +61,38 @@ namespace DaxStudio.UI.Utils
             foreach (var proc in Process.GetProcessesByName("msmdsrv"))
             { 
                 int _port = 0;
+                string parentTitle = $"localhost:{_port}";
                 EmbeddedSSASIcon _icon = EmbeddedSSASIcon.PowerBI;
                 var parent = proc.GetParent();
-
-                // exit here if the parent == "services" then this is a SSAS instance
-                if (parent.ProcessName.Equals("services", StringComparison.OrdinalIgnoreCase)) continue;
-
-                // exit here if the parent == "RSHostingService" then this is a SSAS instance
-                if (parent.ProcessName.Equals("RSHostingService", StringComparison.OrdinalIgnoreCase))
+                
+                if (parent != null)
                 {
-                    // only show PBI Report Server if we are running as admin
-                    // otherwise we won't have any access to the models
-                    if (IsAdministrator())
-                        _icon = EmbeddedSSASIcon.PowerBIReportServer; 
-                    else
-                        continue;
+                    // exit here if the parent == "services" then this is a SSAS instance
+                    if (parent.ProcessName.Equals("services", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    // exit here if the parent == "RSHostingService" then this is a SSAS instance
+                    if (parent.ProcessName.Equals("RSHostingService", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // only show PBI Report Server if we are running as admin
+                        // otherwise we won't have any access to the models
+                        if (IsAdministrator() && includePBIRS)
+                            _icon = EmbeddedSSASIcon.PowerBIReportServer;
+                        else
+                            continue;
+                    }
+
+                    // if the process was launched from Visual Studio change the icon
+                    if (parent.ProcessName.Equals("devenv", StringComparison.OrdinalIgnoreCase)) _icon = EmbeddedSSASIcon.Devenv;
+
+                    // get the window title so that we can parse out the file name
+                    parentTitle = parent.MainWindowTitle;
+                    if (parentTitle.Length == 0)
+                    {
+                        // for minimized windows we need to use some Win32 api calls to get the title
+                        //parentTitle = WindowTitle.GetWindowTitleTimeout( parent.Id, 300);
+                        parentTitle = WindowTitle.GetWindowTitle(parent.Id);
+                    }
                 }
-
-                // if the process was launched from Visual Studio change the icon
-                if (parent.ProcessName.Equals("devenv",StringComparison.OrdinalIgnoreCase)) _icon = EmbeddedSSASIcon.Devenv;
-
-                // get the window title so that we can parse out the file name
-                var parentTitle = parent.MainWindowTitle;
-                if (parentTitle.Length == 0)
-                {
-                    // for minimized windows we need to use some Win32 api calls to get the title
-                    parentTitle = WindowTitle.GetWindowTitleTimeout( parent.Id, 300);
-                }
-
                 // try and get the tcp port from the Win32 TcpTable API
                 try
                 {
@@ -118,22 +125,7 @@ namespace DaxStudio.UI.Utils
             WindowsPrincipal principal = new WindowsPrincipal(identity);
             return principal.IsInRole(WindowsBuiltInRole.Administrator);
         }
-
-        /*
-        public static List<PowerBIInstance> Instances
-        {
-            get
-            {
-                if (_isloaded) return _instances;
-
-                Refresh(); // start async refresh
-                return new List<PowerBIInstance>() { new PowerBIInstance("Loading...", -1, EmbeddedSSASIcon.Loading) };
-
-            }
-        }
-
-        */
-
+        
 
     }
 }

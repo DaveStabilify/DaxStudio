@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="DaxStudio.UI.Views.AllServerQueriesView"
+﻿<controls:ZoomableUserControl x:Class="DaxStudio.UI.Views.AllServerQueriesView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
@@ -7,12 +7,9 @@
              xmlns:conv="clr-namespace:DaxStudio.UI.Converters"
              xmlns:controls="clr-namespace:DaxStudio.UI.Controls"
              xmlns:behaviours="clr-namespace:DaxStudio.UI.Behaviours"
-             xmlns:extenders="clr-namespace:DaxStudio.UI.AttachedProperties"    
              xmlns:filter="clr-namespace:DaxStudio.Controls.DataGridFilter;assembly=DaxStudio.Controls.DataGridFilter"
              xmlns:sys="clr-namespace:System;assembly=mscorlib"
-             xmlns:custom="clr-namespace:DaxStudio.UI.Controls"
-             xmlns:vm="clr-namespace:DaxStudio.UI.ViewModels"
-       xmlns:col="clr-namespace:System.Collections;assembly=mscorlib"
+             xmlns:col="clr-namespace:System.Collections;assembly=mscorlib"
              mc:Ignorable="d" 
              d:DesignHeight="300" d:DesignWidth="800"
              BorderBrush="DimGray" BorderThickness="1">
@@ -74,7 +71,7 @@
             
             <DataTemplate x:Key="QueryTextCell">
                 <!--<ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0" MaxHeight="70">-->
-                    <DataGridCell Margin="0" Padding="0" 
+                    <Border Margin="0" Padding="0" 
                                   cal:Message.Attach="[Event MouseDoubleClick] = [Action QueryDoubleClick($datacontext)]">
                         <TextBlock x:Name="Query"
                             Text="{Binding Path=Query,Mode=OneWay,Converter={StaticResource StringWhitespaceRemovalConverter}}"  
@@ -84,7 +81,7 @@
                             ToolTip="{Binding Query}">
                         </TextBlock>
 
-                    </DataGridCell>
+                    </Border>
                 <!--</ScrollViewer>-->
             </DataTemplate>
 
@@ -117,8 +114,9 @@
                     ColumnHeaderStyle="{StaticResource {ComponentResourceKey 
 		            TypeInTargetAssembly={x:Type filter:DataGridHeaderFilterControl}, 
 		            ResourceId=DataGridHeaderFilterControlStyle}}"
-                       
+                    VirtualizingPanel.IsVirtualizing="True"
                     SelectedItem="{Binding SelectedQuery}" 
+                    cal:Message.Attach="[Event MouseDoubleClick] = [Action QueryDoubleClick()]"
                     HorizontalAlignment="Stretch" 
                     AutoGenerateColumns="False"
                     behaviours:GridViewColumnResize.Enabled="True" 
@@ -129,7 +127,7 @@
                     SelectionUnit="FullRow"
                     HeadersVisibility="Column"
                     ClipboardCopyMode="ExcludeHeader"
-                    ScrollViewer.CanContentScroll="False"
+                    ScrollViewer.CanContentScroll="True"
                     FrozenColumnCount="1"
                     GridLinesVisibility="None" 
                     BorderThickness="1,0,0,0" BorderBrush="{x:Null}"
@@ -177,7 +175,8 @@
             <DataGrid.Columns>
                 <!--<DataGridTextColumn Header="StartTime" IsReadOnly="True" Width="65" Binding="{Binding StartTime, StringFormat='hh:mm:ss'}"  />-->
                 <!--  -->
-                <DataGridTemplateColumn CellStyle="{StaticResource ImageCell}" Width="15" Visibility="{Binding Path=DataContext.ShowAggregationRewrites, Converter={StaticResource BoolToVisibilityConverter}, Source={x:Reference bindingProxy}}">
+                <DataGridTemplateColumn CellStyle="{StaticResource ImageCell}" Width="15"
+                                        filter:DataGridColumnExtensions.DoNotGenerateFilterControl="True">
                     
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
@@ -241,7 +240,7 @@
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 
-                                <DataGridCell Margin="0" Padding="0" 
+                                <Border Margin="0" Padding="0" 
                                   cal:Message.Attach="[Event MouseDoubleClick] = [Action QueryDoubleClick($datacontext)]">
                                         <TextBlock x:Name="Username"   
                                             Text="{Binding Path=Username,Mode=OneWay}"  
@@ -250,7 +249,7 @@
                                             TextTrimming="CharacterEllipsis"
                                             ToolTip="{Binding Username}">
                                         </TextBlock>
-                                </DataGridCell>
+                                </Border>
                                 
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
@@ -261,7 +260,7 @@
                         <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0" MaxHeight="70">
-                                <DataGridCell Margin="0" Padding="0" 
+                                <Border Margin="0" Padding="0" 
                                   cal:Message.Attach="[Event MouseDoubleClick] = [Action QueryDoubleClick($datacontext)]">
                                         <TextBlock x:Name="Query"
                             Text="{Binding Path=DatabaseName,Mode=OneWay}"  
@@ -270,7 +269,7 @@
                             TextTrimming="CharacterEllipsis"
                             ToolTip="{Binding DatabaseName}">
                                         </TextBlock>
-                                    </DataGridCell>
+                                    </Border>
                             </ScrollViewer>
                         </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
@@ -314,4 +313,4 @@
             </Grid>
         </Border>
     </Grid>
-</UserControl>
+</controls:ZoomableUserControl>

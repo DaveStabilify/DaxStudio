@@ -2,10 +2,12 @@
 title: Swap Delimiters
 ---
 
+> **Note:** In the Options there is a setting to select a default delimiter style 
+
 In Excel and Power BI DAX supports 2 styles of delimiters:
 - US 
     - comma (,) for list items
-    - fullstop (.) for the decimal separator
+    - period (.) for the decimal separator
 - "European"
     - semicolon (;) for list items
     - comma (,) for the decimal separator

@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Xceed.Wpf.AvalonDock;
 using System.IO;
 using DaxStudio.Common;
+using DaxStudio.UI.Model;
 
 namespace DaxStudio.UI.Extensions
 {
@@ -13,7 +14,7 @@ namespace DaxStudio.UI.Extensions
     {
         public static void LoadLayout(this DockingManager dockingManager)
         {
-            var layoutFileName = Environment.ExpandEnvironmentVariables(Constants.AvalonDockLayoutFile);
+            var layoutFileName = ApplicationPaths.AvalonDockLayoutFile;
             if (!File.Exists(layoutFileName)) return; // exit here if the saved layout file does not exist
 
             using (StreamReader sr = new StreamReader(layoutFileName))
@@ -27,8 +28,9 @@ namespace DaxStudio.UI.Extensions
 
         public static void SaveLayout(this DockingManager dockingManager)
         {
-            var layoutFile = Environment.ExpandEnvironmentVariables(Constants.AvalonDockLayoutFile);
-            Directory.CreateDirectory(layoutFile); //ensure that all the folders in the file path exist
+            var layoutFile = ApplicationPaths.AvalonDockLayoutFile;
+            var layoutFolder = Path.GetDirectoryName(layoutFile);
+            Directory.CreateDirectory(layoutFolder); //ensure that all the folders in the file path exist
             using (StreamWriter sw = new StreamWriter(layoutFile))
             {
 
@@ -52,7 +54,7 @@ namespace DaxStudio.UI.Extensions
             }
 
             // delete the saved layout file if it exists
-            var layoutFileName = Environment.ExpandEnvironmentVariables(Constants.AvalonDockLayoutFile);
+            var layoutFileName = ApplicationPaths.AvalonDockLayoutFile;
             if (File.Exists(layoutFileName)) File.Delete(layoutFileName);
         }
 

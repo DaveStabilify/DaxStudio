@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Collections;
+using ADOTabular.Interfaces;
 //using Microsoft.AnalysisServices.AdomdClient;
 
 namespace ADOTabular
@@ -7,15 +8,14 @@ namespace ADOTabular
     public class ADOTabularTableCollection:IEnumerable<ADOTabularTable>
     {
         
-        private readonly ADOTabularConnection _adoTabConn;
-        private readonly ADOTabularModel  _model;
+        private readonly IADOTabularConnection _adoTabConn;
         private SortedDictionary<string, ADOTabularTable> _tables;
-        private object mutex = new object();
+        private readonly object mutex = new object();
 
-        public ADOTabularTableCollection(ADOTabularConnection adoTabConn, ADOTabularModel model)
+        public ADOTabularTableCollection(IADOTabularConnection adoTabConn, ADOTabularModel model)
         {
             _adoTabConn = adoTabConn;
-            _model = model;
+            Model = model;
 
         }
 
@@ -39,7 +39,7 @@ namespace ADOTabular
 
         public ADOTabularModel Model
         {
-            get { return _model; }
+            get;
         }
 
         public int Count
@@ -49,6 +49,7 @@ namespace ADOTabular
 
         public void Add(ADOTabularTable table)
         {
+            if (table == null) return;
             if (_tables == null)
             {
                 _tables = new SortedDictionary<string, ADOTabularTable>();
@@ -56,13 +57,7 @@ namespace ADOTabular
             _tables.Add(table.Name, table);
         }
 
-        public ADOTabularTable this[string index]
-        {
-            get
-            {
-                return InternalTableCollection[index];
-            }
-        }
+        public ADOTabularTable this[string index] => InternalTableCollection[index];
 
         public bool ContainsKey(string index)
         {

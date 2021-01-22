@@ -46,7 +46,9 @@ namespace DaxStudio.UI.Converters
                     
                     contentPresenter.AppendChild(txtBlock);
                     hdrTemplate.VisualTree = contentPresenter;
-                    
+
+                    var bindingPath = FixBindingPath(item.ColumnName);
+
                     var cellTemplate = new DataTemplate();
                     if (item.DataType == typeof(Byte[]))
                     {
@@ -66,8 +68,8 @@ namespace DaxStudio.UI.Converters
                         cellTooltip.SetValue(ToolTip.ContentProperty, cellImgTooltip);
 
                         // Adding square brackets around the bind will escape any column names with the following "special" binding characters   . / ( ) [ ]
-                        cellImgBlock.SetBinding(Image.SourceProperty, new Binding(FixBindingPath( item.ColumnName )));
-                        cellImgTooltip.SetBinding(Image.SourceProperty, new Binding(FixBindingPath( item.ColumnName )));
+                        cellImgBlock.SetBinding(Image.SourceProperty, new Binding(bindingPath));
+                        cellImgTooltip.SetBinding(Image.SourceProperty, new Binding(bindingPath));
                         cellImgBlock.SetValue(Image.WidthProperty, 50d);
                         
                         cellTemplate.VisualTree = cellImgBlock;
@@ -76,29 +78,46 @@ namespace DaxStudio.UI.Converters
                     {
                         var cellTxtBlock = new FrameworkElementFactory(typeof(TextBlock));
                         // Adding square brackets around the bind will escape any column names with the following "special" binding characters   . / ( ) [ ]
-                        var colBinding = new Binding(FixBindingPath(item.ColumnName));
+                        var colBinding = new Binding(bindingPath);
                         cellTxtBlock.SetBinding(TextBlock.TextProperty, colBinding);
 
+                        // TODO - this might work if I pass thru the data context as a parameter
+                        // then I could call a method on the viewModel
+                        //Button btn = new Button();
+                        //btn.Click += (s, e) => CancelSpid(0);
+
+
                         // Bind FormatString if it exists
-                        if (item.ExtendedProperties[Constants.FORMAT_STRING] != null)
-                            colBinding.StringFormat = item.ExtendedProperties[Constants.FORMAT_STRING].ToString();
+                        if (item.ExtendedProperties[Constants.FormatString] != null)
+                            colBinding.StringFormat = item.ExtendedProperties[Constants.FormatString].ToString();
                         // set culture if it exists
-                        if (item.ExtendedProperties[Constants.LOCALE_ID] != null)
-                            colBinding.ConverterCulture = new CultureInfo((int)item.ExtendedProperties[Constants.LOCALE_ID]);
+                        if (item.ExtendedProperties[Constants.LocaleId] != null)
+                        {
+                            var cultureInfo = CultureInfo.InvariantCulture;
+                            try
+                            {
+                                cultureInfo = new CultureInfo((int)item.ExtendedProperties[Constants.LocaleId]);
+                            }
+                            catch { 
+                                // Do Nothing, just use the initialized value for cultureInfo 
+                            }
+                            colBinding.ConverterCulture = cultureInfo;
+                        }
                         cellTxtBlock.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
                         if (item.DataType != typeof(string)) cellTxtBlock.SetValue(TextBlock.TextAlignmentProperty, TextAlignment.Right);
                         cellTxtBlock.SetBinding(FrameworkElement.ToolTipProperty, colBinding );
                         cellTemplate.VisualTree = cellTxtBlock;
                         
                     }
+                    
                     var dgc = new DataGridTemplateColumn
                     {
                         CellTemplate = cellTemplate,
-                    //    Width = Double.NaN,    
+                        //    Width = Double.NaN,    
                         HeaderTemplate = hdrTemplate,
                         Header = item.Caption,
-                        
-                        ClipboardContentBinding = new Binding(FixBindingPath(item.ColumnName))
+                        SortMemberPath = item.ColumnName,
+                        ClipboardContentBinding = new Binding(bindingPath)
                     };
 
                     columns.Add(dgc);

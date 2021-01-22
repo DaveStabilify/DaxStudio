@@ -20,7 +20,7 @@ namespace DaxStudio.UI.ResultsTargets
     {
         private IDaxStudioHost _host;
         private IEventAggregator _eventAggregator;
-        private bool _isPowerBIOrSSDTConnection = false;
+        private bool _isPowerBIOrSSDTConnection;
 
         [ImportingConstructor]
         public ResultsTargetExcelLinked(IDaxStudioHost host, IEventAggregator eventAggregator)
@@ -35,17 +35,17 @@ namespace DaxStudio.UI.ResultsTargets
         public string Group => "Excel";
         public bool IsDefault => false;
         public bool IsAvailable => _host.IsExcel && !_isPowerBIOrSSDTConnection;
-        public int DisplayOrder => 100;
+        public int DisplayOrder => 300;
         public string Message => "Query will be sent to Excel for execution";
-        public OutputTargets Icon => OutputTargets.Linked;
-
+        public OutputTarget Icon => OutputTarget.Linked;
+        public string Tooltip => "Sends the Query text to Excel for execution";
         public bool IsEnabled => !_isPowerBIOrSSDTConnection;
 
         public string DisabledReason => "Linked Excel output is not supported against Power BI Desktop or SSDT based connections";
 
         public void Handle(ConnectionChangedEvent message)
         {
-            _isPowerBIOrSSDTConnection = message.Connection?.IsPowerBIorSSDT ?? false;
+            _isPowerBIOrSSDTConnection = message.IsPowerBIorSSDT;
             NotifyOfPropertyChange(() => IsEnabled);
             _eventAggregator.PublishOnUIThread(new RefreshOutputTargetsEvent());
         }
@@ -58,15 +58,15 @@ namespace DaxStudio.UI.ResultsTargets
         }
         #endregion
 
-        public Task OutputResultsAsync(IQueryRunner runner)
+        public async Task OutputResultsAsync(IQueryRunner runner, IQueryTextProvider textProvider)
         {
-            return Task.Run(() =>
+            await Task.Run(() =>
                 {
                     try
                     {
                         runner.OutputMessage("Query Started");
                         var sw = Stopwatch.StartNew();
-                        var dq = runner.QueryText;
+                        var dq = textProvider.QueryText;
                         
                         //  write results to Excel
                         runner.Host.Proxy.OutputLinkedResultAsync(dq
@@ -79,7 +79,7 @@ namespace DaxStudio.UI.ResultsTargets
                                 runner.OutputMessage(
                                     string.Format("Query Completed - Query sent to Excel for execution)"), durationMs);
                                 runner.ActivateOutput();
-                                runner.SetResultsMessage("Query sent to Excel for execution", OutputTargets.Linked);
+                                runner.SetResultsMessage("Query sent to Excel for execution", OutputTarget.Linked);
 
                             },TaskScheduler.Default);
                     }

@@ -34,7 +34,7 @@
    
         </ResourceDictionary>
     </UserControl.Resources>
-    <Border Background="White" BorderBrush="{StaticResource DaxStudioBrush}" BorderThickness="1" CornerRadius="0">
+    <Border Background="{DynamicResource DialogBackground}" BorderBrush="{StaticResource DaxStudioBrush}" BorderThickness="1" CornerRadius="0">
         
     <Grid>
         <Grid.RowDefinitions>
@@ -61,7 +61,7 @@
                        Margin="10px 0" BorderBrush="DarkGray"
                        HeadersVisibility="Column"
                        GridLinesVisibility="None"
-                       Background="White" 
+                       Background="Transparent" 
                        TabIndex="0">
                 <DataGrid.Columns>
                     <DataGridTemplateColumn Header="Parameter"  IsReadOnly="True" KeyboardNavigation.IsTabStop="False" >
@@ -149,10 +149,10 @@
                 </ListView.View>
  
             </ListView>-->
-            <Button x:Name="WriteParameterXml" IsDefault="True" Grid.Row="3" Margin="9,7" Width="140" HorizontalAlignment="Left" TabIndex="4">Write Parameter XML</Button>
+            <Button x:Name="WriteParameterXml" IsDefault="True" Grid.Row="3" Margin="9,7" Width="140" HorizontalAlignment="Left" TabIndex="4">_Write Parameter XML</Button>
             <StackPanel Orientation="Horizontal" Grid.Row="3" Margin="7,5" HorizontalAlignment="Right">
                 
-                <Button x:Name="Ok" IsDefault="True" TabIndex="1">Ok</Button>
+                <Button x:Name="OK" IsDefault="True" TabIndex="1">Ok</Button>
                 <Button x:Name="Cancel" IsCancel="True" TabIndex="2">Cancel</Button>
             </StackPanel>
         </Grid>

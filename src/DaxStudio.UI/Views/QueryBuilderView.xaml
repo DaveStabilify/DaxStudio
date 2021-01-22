@@ -1,0 +1,314 @@
+﻿<ctrl:ZoomableUserControl x:Class="DaxStudio.UI.Views.QueryBuilderView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:ctrl="clr-namespace:DaxStudio.UI.Controls"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:dd="clr-namespace:GongSolutions.Wpf.DragDrop;assembly=GongSolutions.Wpf.DragDrop"
+             xmlns:fa="http://schemas.fontawesome.io/icons/"
+             xmlns:conv="clr-namespace:DaxStudio.UI.Converters"
+             xmlns:cal="clr-namespace:Caliburn.Micro;assembly=Caliburn.Micro.Platform"
+             xmlns:local="clr-namespace:DaxStudio.UI.Views"
+             xmlns:attachedProperties="clr-namespace:DaxStudio.UI.AttachedProperties"
+             mc:Ignorable="d" 
+             d:DesignHeight="450" d:DesignWidth="800" 
+             IsEnabled="{Binding IsEnabled}">
+    <ctrl:ZoomableUserControl.Resources>
+        <ResourceDictionary>
+            <conv:EnumDescriptionConverter x:Key="enumDescriptionConverter"/>
+            <conv:MinWidthOrientationConverter x:Key="MinWidthOrientationConverter" />
+            <conv:IsMeasureVisibilityConverter x:Key="IsMeasureToVisibilityConverter"/>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
+            <conv:BoolToNotVisibleConverter x:Key="BoolToNotVisibleConverter"/>
+            <conv:FilterValueHeightConverter x:Key="FilterValueHeightConverter" />
+            <conv:IsMultiLineFilterTypeConverter x:Key="IsMultiLineFilterTypeConverter"/>
+            
+            <Style x:Key="EditButton" TargetType="{x:Type fa:ImageAwesome}">
+            <Setter Property="Width" Value="10"/>
+            <Setter Property="Height" Value="10"/>
+            <Setter Property="Foreground" Value="Gray"/>
+                <Setter Property="Margin" Value="0,0,5,0"/>
+                <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="Green"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="RemoveButton" TargetType="{x:Type fa:ImageAwesome}">
+            <Setter Property="Width" Value="10"/>
+            <Setter Property="Height" Value="10"/>
+                <Setter Property="Foreground" Value="Gray"/>
+                <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="Red"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="EmptyColumnListStyle"
+           TargetType="ListBox"
+           BasedOn="{StaticResource {x:Type ListBox}}">
+            <Style.Triggers>
+                <!-- Use ListBox.HasItems instead of Binding -->
+                <Trigger Property="HasItems" Value="False">
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate>
+                                <Border BorderBrush="Gray" BorderThickness="0.5">
+                                    <StackPanel Orientation="Vertical">
+                                        <TextBlock 
+                                           TextWrapping="Wrap" 
+                                           Padding="5 10 5 0"
+                                           FontWeight ="Bold"
+                                           FontSize="24"
+                                           Margin="0"
+                                           Foreground="LightGray"
+                                           TextAlignment="Center">Drag output Columns / Measures Here</TextBlock>
+                                            <TextBlock 
+                                                TextWrapping="Wrap"
+                                                Margin="5 0"
+                                                Foreground="LightGray" TextDecorations="Underline" TextAlignment="Center"><Hyperlink NavigateUri="https://daxstudio.org/documentation/features/query-builder/#keyboard-shortcuts" attachedProperties:HyperlinkExtensions.IsExternal="true">Click here for help on keyboard shortcuts</Hyperlink></TextBlock>
+                                    </StackPanel>
+                                </Border>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="EmptyFilterListStyle"
+           TargetType="ListBox"
+           BasedOn="{StaticResource {x:Type ListBox}}">
+            <Style.Triggers>
+                <!-- Use ListBox.HasItems instead of Binding -->
+                <Trigger Property="HasItems" Value="False">
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate>
+                                <Border BorderBrush="Gray" BorderThickness="0.5">
+                                    <StackPanel Orientation="Vertical">
+                                        <TextBlock  
+                                           TextWrapping="Wrap" 
+                                           Padding="5 10 5 0"
+                                           FontWeight ="Bold"
+                                           FontSize="24"
+                                           Foreground="LightGray"
+                                           TextAlignment="Center">Drag Filter Columns Here</TextBlock>
+                                        <TextBlock Foreground="LightGray" 
+                                                   TextDecorations="Underline" 
+                                                   TextWrapping="Wrap"
+                                                   Margin="5 0"
+                                                   TextAlignment="Center"><Hyperlink NavigateUri="https://daxstudio.org/documentation/features/query-builder/#keyboard-shortcuts" attachedProperties:HyperlinkExtensions.IsExternal="true">Click here for help on keyboard shortcuts</Hyperlink></TextBlock>
+                                    </StackPanel>
+                                    </Border>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/DaxStudio.UI;Component/Resources/MetadataIcons.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/DaxStudio.UI;Component/Resources/DaxStudioResources.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </ctrl:ZoomableUserControl.Resources>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*" MinHeight="100"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*" MinHeight="100"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="1"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid Grid.ColumnSpan="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Columns/Measures" TextTrimming="CharacterEllipsis" Margin="10,0" FontSize="14"  />
+            
+                
+            <Button x:Name="AddNewMeasure" Grid.Column="1" MaxWidth="80" Margin="0,0,10,0"
+                    ToolTip="Create a new measure for this query">
+                <StackPanel Orientation="Horizontal">
+                    <fa:FontAwesome Icon="PlusSquare" Margin="2" Foreground="Green"/>
+                    <TextBlock>New</TextBlock>
+                </StackPanel>
+            </Button>
+            
+        </Grid>
+        <!--                    -->
+        <ListBox Name="Columns" ItemsSource="{Binding Columns.Items}" 
+                 SelectedItem="{Binding SelectedColumn, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 SelectedIndex="{Binding SelectedIndex, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 dd:DragDrop.IsDropTarget="True" 
+                 dd:DragDrop.IsDragSource="True"
+                 dd:DragDrop.UseDefaultDragAdorner="True"
+                 dd:DragDrop.DropTargetAdornerBrush="Coral"
+                 dd:DragDrop.ShowAlwaysDropTargetAdorner="True"
+                 dd:DragDrop.DropHandler="{Binding Columns.DropHandler}"
+                 HorizontalContentAlignment="Stretch"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 Margin="10,5"
+                 Grid.Row="1"
+                 Grid.ColumnSpan="3"
+                 Style="{StaticResource EmptyColumnListStyle}">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid >
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                   
+                        <Grid>
+                            <Image Source="{Binding MetadataImage,Converter={StaticResource MetadataIcons}}" Margin="2,1,5,1" Grid.Column="0" />
+                            <fa:ImageAwesome Icon="Star" Width="10" Margin="7,12,0,0" Foreground="Gold" Visibility="{Binding Converter={StaticResource BoolToNotVisibleConverter},Path=IsModelItem}"/>
+                        </Grid>
+                        <TextBlock Text="{Binding Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding DaxName}" Grid.Column="1"/>
+   
+                        <!-- Edit Controls -->
+                        <StackPanel Orientation="Horizontal" Grid.Column="2">
+                            <fa:ImageAwesome Icon="Pencil" 
+                                         Style="{StaticResource EditButton}"
+                                         Visibility="{Binding ObjectType, Converter={StaticResource IsMeasureToVisibilityConverter}}"
+                                         ToolTip="Edit Measure Expression"
+                                         cal:Action.TargetWithoutContext="{Binding Path=DataContext.Columns, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                         cal:Message.Attach="[Event MouseLeftButtonUp] = [Action EditMeasure($dataContext)]"/>
+                            <fa:ImageAwesome Icon="TimesCircle" 
+                                         ToolTip="Remove from query"
+                                         Style="{StaticResource RemoveButton}"  
+                                         cal:Action.TargetWithoutContext="{Binding Path=DataContext.Columns, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                         cal:Message.Attach="[Event MouseLeftButtonUp] = [Action Remove($dataContext)]"/>
+                        </StackPanel>
+               
+                    </Grid>
+
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+            
+        </ListBox>
+        <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" ResizeDirection="Rows" VerticalAlignment="Top"
+                      ShowsPreview="True" Grid.ColumnSpan="3"
+                      Height="5" ResizeBehavior="PreviousAndNext"/>
+        <TextBlock Grid.Row="2" Text="Filters" Margin="10,5,0,0" FontSize="14" Grid.ColumnSpan="3"/>
+        
+        <ListView Name="Filters"
+                  Grid.ColumnSpan="3"
+                 ItemsSource="{Binding Filters.Items}" 
+                 dd:DragDrop.IsDropTarget="True" 
+                 dd:DragDrop.IsDragSource="True"
+                 dd:DragDrop.UseDefaultDragAdorner="True"
+                 dd:DragDrop.DropTargetAdornerBrush="Coral"
+                 dd:DragDrop.ShowAlwaysDropTargetAdorner="True"
+                 dd:DragDrop.DropHandler="{Binding Filters.DropHandler}"
+                 Grid.Row="3" Margin="10"
+                 HorizontalContentAlignment="Stretch"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 Style="{StaticResource EmptyFilterListStyle}"
+                 >
+            <ListView.ItemTemplate>
+                <DataTemplate>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition />
+                            <RowDefinition />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock FontWeight="SemiBold" 
+                                       Text="{Binding Caption}"
+                                       Foreground="Blue"
+                                       TextTrimming="CharacterEllipsis"
+                                       TextWrapping="NoWrap"
+                                       HorizontalAlignment="Left"
+                                       Margin="0,0,5,0">
+                                <TextBlock.ToolTip>
+                                    <TextBlock Text="{Binding TabularObject.DaxName}"/>
+                                </TextBlock.ToolTip>
+                            </TextBlock>
+                        <fa:ImageAwesome  
+                                         Grid.Column="1"
+                                         x:Name="RemoveFilter" 
+                                         ToolTip="Remove Filter"  
+                                         HorizontalAlignment="Right"
+                                         cal:Message.Attach="[Event MouseLeftButtonUp] = [Action Remove($dataContext)]"
+                                         cal:Action.TargetWithoutContext="{Binding Path=DataContext.Filters, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                         Icon="TimesCircle"
+                                         Style="{StaticResource RemoveButton}">
+                        </fa:ImageAwesome>
+
+                        <WrapPanel  Grid.ColumnSpan="2" Orientation="Horizontal" Grid.Row="1" >
+                            <ComboBox Grid.Row="2" 
+                                      Grid.ColumnSpan="2" 
+                                      x:Name="FilterType" ItemsSource="{Binding FilterTypes}" 
+                                      SelectedItem="{Binding FilterType}"
+                                      Margin="3">
+                                <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Converter={StaticResource enumDescriptionConverter}}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            <WrapPanel Orientation="Horizontal">
+                                <TextBox 
+                                     x:Name="FilterValue" 
+                                     Text="{Binding FilterValue}" 
+                                     Visibility="{Binding ShowFilterValue, Converter={StaticResource BoolToVisibility}}" 
+                                     AcceptsReturn="{Binding FilterType, Converter={StaticResource IsMultiLineFilterTypeConverter}}"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Height="{Binding FilterType, Converter={StaticResource FilterValueHeightConverter}, ConverterParameter=100}"
+                                     MinWidth="120"
+                                     Margin="3"/>
+                                <TextBox 
+                                    x:Name="FilterValue2"
+                                    Text="{Binding FilterValue2}"
+                                    Visibility="{Binding ShowFilterValue2, Converter={StaticResource BoolToVisibility}}"
+                                    MinWidth="120"
+                                    Margin="3"/>
+                            </WrapPanel>
+                        </WrapPanel>
+                    </Grid>
+                    <!--</Border>-->
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+        <StackPanel Orientation="Horizontal" Grid.Row="4" Grid.ColumnSpan="3"
+                    HorizontalAlignment="Right">
+            <Button x:Name="SendTextToEditor" Margin="5" Padding="5,3">
+                <StackPanel Orientation="Vertical">
+                    <fa:FontAwesome Icon="Edit" 
+                                    FontSize="32"
+                                    Foreground="{StaticResource DaxStudioBrush}"
+                                    Margin="5,2,5,0" />
+                    <TextBlock Text="Edit Query"/>
+                </StackPanel>
+                
+            </Button>
+            <Button x:Name="RunQuery" Margin="5"  Padding="5,3">
+                <StackPanel Orientation="Vertical">
+                    <fa:FontAwesome Icon="Play" 
+                                    FontSize="32" 
+                                    Foreground="{StaticResource RunGreenBrush}"
+                                    Margin="5,2,5,0" />
+                    <TextBlock Text="Run Query"/>
+                </StackPanel>
+            </Button>
+
+        </StackPanel>
+    </Grid>
+</ctrl:ZoomableUserControl>
