@@ -1,16 +1,26 @@
 ﻿using Caliburn.Micro;
+using DaxStudio.Core.Model;
 using DaxStudio.UI.Enums;
 using DaxStudio.UI.Model;
 using DaxStudio.UI.Utils;
-using System.Collections;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel.Composition;
 
 namespace DaxStudio.UI.ViewModels
 {
     [Export]
-    public class QueryParametersDialogViewModel:Screen
+    public class QueryParametersDialogViewModel:BaseDialogViewModel
     {
+        static QueryParametersDialogViewModel()
+        {
+            ParameterDataTypes.Add("string");
+            ParameterDataTypes.Add("int");
+            ParameterDataTypes.Add("dateTime");
+            ParameterDataTypes.Add("boolean");
+            ParameterDataTypes.Add("double");
+        }
+
         private readonly QueryInfo _queryInfo;
         private readonly DocumentViewModel _document;
         [ImportingConstructor]
@@ -25,6 +35,9 @@ namespace DaxStudio.UI.ViewModels
 
         public DialogResult DialogResult { get; set; }
 
+        public static ObservableCollection<string> ParameterDataTypes { get; } = new ObservableCollection<string>();
+
+
         #region button click handlers
 
         public void WriteParameterXml()
@@ -32,7 +45,7 @@ namespace DaxStudio.UI.ViewModels
             ParameterHelper.WriteParameterXml(_document, _queryInfo);
         }
 
-        public void Ok()
+        public async void Ok()
         {
             // TODO - copy parameters
             //foreach ( var p in Parameters)
@@ -40,13 +53,13 @@ namespace DaxStudio.UI.ViewModels
             //    _queryInfo.Parameters[p.Name].Value = p.Value;
             //}
             DialogResult = DialogResult.OK;
-            TryClose();
+            await TryCloseAsync();
         }
 
-        public void Cancel()
+        public async override void Close()
         {
             DialogResult = DialogResult.Cancel;
-            TryClose();
+            await TryCloseAsync();
         }
 
         #endregion

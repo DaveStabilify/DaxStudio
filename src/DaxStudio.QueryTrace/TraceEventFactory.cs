@@ -1,69 +1,50 @@
 ﻿//extern alias ExcelAmo;
 
 using Microsoft.AnalysisServices;
+using System;
+using System.Collections.Generic;
 //using xlAmo = ExcelAmo.Microsoft.AnalysisServices;
 namespace DaxStudio.QueryTrace
 {
     public  static partial class TraceEventFactory
     {
-        public static TraceEvent Create(TraceEventClass eventClass)
+       
+
+        private static List<TraceColumn> desiredColumns = new List<TraceColumn>() {
+            TraceColumn.ActivityID,
+            TraceColumn.ApplicationName,
+            TraceColumn.ApplicationContext,
+            TraceColumn.CpuTime,
+            TraceColumn.CurrentTime,
+            TraceColumn.DatabaseName,
+            TraceColumn.Duration,
+            TraceColumn.EndTime,
+            TraceColumn.Error,
+            TraceColumn.EventClass,
+            TraceColumn.EventSubclass,
+            TraceColumn.IntegerData,
+            TraceColumn.NTUserName,
+            TraceColumn.ObjectPath,
+            TraceColumn.ObjectName,
+            TraceColumn.ObjectReference,
+            TraceColumn.RequestID,
+            TraceColumn.RequestParameters,
+            TraceColumn.RequestProperties,
+            TraceColumn.SessionID,
+            TraceColumn.Spid,
+            TraceColumn.StartTime,
+            TraceColumn.TextData
+        };
+
+        internal static TraceEvent Create(TraceEventClass eventClass, HashSet<TraceColumn> traceColumns)
         {
-            var trc = new TraceEvent(eventClass);
-            trc.Columns.Add(TraceColumn.EventClass);
-            trc.Columns.Add(TraceColumn.TextData);
-            trc.Columns.Add(TraceColumn.CurrentTime);
-            trc.Columns.Add(TraceColumn.Spid);
-            trc.Columns.Add(TraceColumn.SessionID);
-            trc.Columns.Add(TraceColumn.ActivityID);
-            trc.Columns.Add(TraceColumn.RequestID);
-            if (eventClass == TraceEventClass.QueryEnd)
+            var trcEvent = new TraceEvent(eventClass);
+            foreach (var col in desiredColumns)
             {
-                trc.Columns.Add(TraceColumn.DatabaseName);
-                trc.Columns.Add(TraceColumn.EndTime);
-                trc.Columns.Add(TraceColumn.NTUserName);
+                if (traceColumns.Contains(col)) 
+                    trcEvent.Columns.Add(col);
             }
-
-            if (eventClass != TraceEventClass.DirectQueryEnd) {
-                // DirectQuery doesn't have subclasses
-                trc.Columns.Add(TraceColumn.EventSubclass);
-            }
-
-            if (eventClass != TraceEventClass.VertiPaqSEQueryCacheMatch)
-            {
-                trc.Columns.Add(TraceColumn.StartTime);
-            }
-
-            if (eventClass == TraceEventClass.QueryEnd 
-                || eventClass == TraceEventClass.CommandEnd
-                || eventClass == TraceEventClass.DAXQueryPlan)
-            {
-                trc.Columns.Add(TraceColumn.ApplicationName);
-            }
-            
-            switch (eventClass)
-            {
-                case TraceEventClass.CommandEnd:
-                case TraceEventClass.CalculateNonEmptyEnd:
-                case TraceEventClass.DirectQueryEnd:
-                case TraceEventClass.DiscoverEnd:
-                case TraceEventClass.ExecuteMdxScriptEnd:
-                case TraceEventClass.FileSaveEnd:
-                case TraceEventClass.ProgressReportEnd:
-                case TraceEventClass.QueryCubeEnd:
-                case TraceEventClass.QueryEnd:
-                case TraceEventClass.QuerySubcube:
-                case TraceEventClass.QuerySubcubeVerbose:
-                case TraceEventClass.VertiPaqSEQueryEnd:
-                    trc.Columns.Add(TraceColumn.Duration);
-                    trc.Columns.Add(TraceColumn.CpuTime);
-                    break;
-                case TraceEventClass.Error:
-                    trc.Columns.Add(TraceColumn.Error);
-                    break;
-
-            }
-            return trc;
+            return trcEvent;
         }
-
     }
 }

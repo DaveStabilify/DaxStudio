@@ -1,7 +1,12 @@
-﻿using System.ComponentModel.Composition;
 using Caliburn.Micro;
+using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
 using DaxStudio.UI.Model;
+using System;
+using System.ComponentModel.Composition;
+using System.Diagnostics;
+using System.Windows.Input;
+using System.Windows.Media;
 
 namespace DaxStudio.UI.ViewModels
 {
@@ -27,9 +32,9 @@ namespace DaxStudio.UI.ViewModels
             _messages.Add(new OutputMessage(MessageType.Information, message));
         }
 
-        public void AddInformation(string message, double durationMs)
+        public void AddSuccess(string message, double durationMs)
         {
-            _messages.Add(new OutputMessage(MessageType.Information, message,durationMs));
+            _messages.Add(new OutputMessage(MessageType.Success, message, durationMs));
         }
 
         public void AddWarning(string message)
@@ -46,23 +51,66 @@ namespace DaxStudio.UI.ViewModels
 
         public void AddError(string message,int row, int column)
         {
-            _messages.Add(new OutputMessage(MessageType.Error, message,row,column ));
+            _messages.Add(new LocationOutputMessage(MessageType.Error, message, row, column) { Parent = this });
         }
 
-        public override string Title
+        public override string Title => "Log";
+
+        public override string DefaultDockingPane => "DockBottom";
+        public override string ContentId => "output";
+
+        public void Clear()
         {
-            get { return "Output"; }
+            Messages.Clear();
+            AddInformation("Log Cleared");
         }
 
-
-        public void MessageDoubleClick(OutputMessage message)
+        internal void AddMessage(OutputMessage message)
         {
-            if (message.Row >= 0 && message.Column >= 0)
+            message.Parent = this;
+            Messages.Add(message);
+        }
+
+        private ICommand _gotoLocation;
+        public ICommand GotoLocation
+        {
+            get
             {
-                _eventAggregator.PublishOnUIThread(new NavigateToLocationEvent(message.Row, message.Column));
+                if (_gotoLocation == null)
+                {
+                    _gotoLocation = new Utils.RelayCommand(param =>
+                    {
+                        var msg = (LocationOutputMessage)param;
+                        Debug.WriteLine($"Goto location ({msg.Row},{msg.Column})");
+                        _eventAggregator.PublishAsync(new NavigateToLocationEvent(msg.Row, msg.Column));
+
+                    });
+                }
+                return _gotoLocation;
             }
         }
 
+        private ICommand _openFolder;
+        public ICommand OpenFolder
+        {
+            get
+            {
+                if (_openFolder == null)
+                    _openFolder = new Utils.RelayCommand(param =>
+                    {
+                        var msg = (FolderOutputMessage)param;
+                        Debug.WriteLine($"Open ({msg.FolderPath})");
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = msg.FolderPath,
+                            UseShellExecute = true,
+                            Verb = "open"
+                        });
+                    });
+                
+                return _openFolder;
+            }
+        }
     }
 
 

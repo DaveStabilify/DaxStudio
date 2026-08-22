@@ -1,57 +1,66 @@
-﻿extern alias ExcelAdomdClientReference;
+﻿using ADOTabular.Enums;
+using System;
 using System.Data;
+using System.Diagnostics.Contracts;
 
 namespace ADOTabular.AdomdClientWrappers
 {
-    public class AdomdDataAdapter
+    public class AdomdDataAdapter : IDisposable
     {
-        private Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter _obj;
-        private ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter _objExcel;
+        private readonly Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter _obj;
 
         public AdomdDataAdapter() { }
-        public AdomdDataAdapter(Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter obj)
+        public AdomdDataAdapter(Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter adapter)
         {
-            _obj = obj;
+            _obj = adapter;
         }
-        public AdomdDataAdapter(ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter obj)
+
+        public AdomdDataAdapter(AdomdCommand command)
         {
-            _objExcel = obj;
-        }
-        public AdomdDataAdapter(AdomdCommand obj)
-        {
-            if (obj.Connection.Type == AdomdType.AnalysisServices)
-            {
-                _obj = new Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter();
-                _obj.SelectCommand = (Microsoft.AnalysisServices.AdomdClient.AdomdCommand) obj.UnderlyingCommand;
-            }
-            else
-            {
-                ExcelAdoMdConnections.VoidDelegate f = delegate
-                {
-                    _objExcel = new ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter();
-                    _objExcel.SelectCommand =
-                        (ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdCommand) obj.UnderlyingCommand;
-                };
-                f();
-            }
+            Contract.Requires(command != null, "The command parameter must not be null");
             
+            _obj = new Microsoft.AnalysisServices.AdomdClient.AdomdDataAdapter
+            {
+                SelectCommand = (Microsoft.AnalysisServices.AdomdClient.AdomdCommand)command.InternalCommand
+            };
         }
         
 
        public void Fill(DataTable tbl)
        {
-           if (_obj != null)
-           {
-               _obj.Fill(tbl);
-           }
-           else
-           {
-               ExcelAdoMdConnections.VoidDelegate f = delegate
-               {
-                   _objExcel.Fill(tbl);
-               };
-               f();
-           }
+           Contract.Requires(tbl != null, "DataTable must not be null");
+           
+           _obj.Fill(tbl);
+           
        }
+
+
+        #region IDisposable Support
+        private bool disposedValue; // To detect redundant calls
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    
+                        _obj.Dispose();
+                    
+                }
+
+                disposedValue = true;
+            }
+        }
+
+
+        // This code added to correctly implement the disposable pattern.
+        public void Dispose()
+        {
+            // Do not change this code. Put cleanup code in Dispose(bool disposing) above.
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        #endregion
     }
 }

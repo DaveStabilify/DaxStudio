@@ -1,6 +1,7 @@
-﻿using Caliburn.Micro;
+using Caliburn.Micro;
 using DaxStudio.UI.Interfaces;
 using System.Linq;
+using DaxStudio.Core.Interfaces;
 
 namespace DaxStudio.UI.Extensions
 {
@@ -14,13 +15,5 @@ namespace DaxStudio.UI.Extensions
             }
         }
 
-        public static void EnableAll(this BindableCollection<ITraceWatcher> traceWatchers)
-        {
-            var activeTrace = traceWatchers.FirstOrDefault(t => t.IsChecked);
-            foreach (var tw in traceWatchers)
-            {
-                tw.IsEnabled = activeTrace == null || activeTrace.FilterForCurrentSession == tw.FilterForCurrentSession ;
-            }
-        }
     }
 }

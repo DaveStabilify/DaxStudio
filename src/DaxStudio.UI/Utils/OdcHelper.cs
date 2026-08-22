@@ -1,9 +1,6 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Xml.Linq;
 
 namespace DaxStudio.UI.Utils
 {
@@ -11,13 +8,58 @@ namespace DaxStudio.UI.Utils
     {
         public static void CreateOdcFile(string datasource, string database, string cube)
         {
-            string odcHeader = @"
-<html xmlns:o=""urn:schemas-microsoft-com:office:office""
+            var odcPath = OdcFilePath();
+            File.WriteAllText(odcPath, string.Format(odcHeader,"Cube") + string.Format(odcBody, datasource, database, "Cube", cube) + odcFooter);
+        }
+
+        internal static string CreateOdcQueryFile(string connectionString, string query)
+        {
+            var odcPath = OdcTempFilePath();
+            var escapedQuery = XmlString(query);
+            File.WriteAllText(odcPath, string.Format(odcHeader,"Table") + string.Format(odcQueryBody, connectionString, "Default", escapedQuery) + odcFooter);
+            return odcPath;
+        }
+
+        public static string XmlString(string text)
+        {
+            return new XElement("t", text).LastNode.ToString().Replace("\r", "&#13;").Replace("\n","&#10;");
+        }
+
+        public static string OdcTempFilePath()
+        {
+            // Get a temp filename
+            var tempFile = Path.GetTempFileName();
+            // this creates an actual .tmp file so we delete that as we don't need it
+            File.Delete(tempFile);
+            // change the extension to .odc
+            var dsPath = tempFile.Replace(".tmp", ".odc");
+
+            return dsPath;
+        }
+
+        public static string OdcFilePath()
+        {
+            // TODO - should we write to MyDocuments or ApplicationData ??
+            var myDocs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments, Environment.SpecialFolderOption.Create);
+            var dsPath = Path.Combine(myDocs, "My Data Sources", "DaxStudio.odc");
+            
+            // The following line is only here to fix up an issue caused by a preview release of this feature 
+            // which was creating a DaxStudio.odc subfolder which then block creation of this as a file
+            if (Directory.Exists(dsPath)) Directory.Delete(dsPath);
+            
+            // ensure that the folder exists
+            Directory.CreateDirectory(Path.GetDirectoryName(dsPath));
+            return dsPath;
+        }
+
+        //Integrated Security=SSPI;
+
+        private static string odcHeader = @"<html xmlns:o=""urn:schemas-microsoft-com:office:office""
 xmlns=""http://www.w3.org/TR/REC-html40"">
 
 <head>
 <meta http-equiv=Content-Type content=""text/x-ms-odc; charset=utf-8"">
-<meta name=ProgId content=ODC.Cube>
+<meta name=ProgId content=ODC.{0}>
 <meta name=SourceType content=OLEDB>
 <meta name=Catalog content=PRS>
 <meta name=Table content=Model>
@@ -25,21 +67,32 @@ xmlns=""http://www.w3.org/TR/REC-html40"">
 <xml id=docprops><o:DocumentProperties
   xmlns:o=""urn:schemas-microsoft-com:office:office""
   xmlns=""http://www.w3.org/TR/REC-html40"">
-  <o:Name>mtbsql608v-dev_mssqlinst01 PRS Model</o:Name>
+  <o:Name>DAX Studio Analyze in Excel PowerBI Model</o:Name>
  </o:DocumentProperties>
 </xml>";
-            var odcBody = @"<xml id=msodc><odc:OfficeDataConnection
+        private static string odcBody = @"<xml id=msodc><odc:OfficeDataConnection
   xmlns:odc=""urn:schemas-microsoft-com:office:odc""
   xmlns=""http://www.w3.org/TR/REC-html40"">
   <odc:Connection odc:Type=""OLEDB"">
-   <odc:ConnectionString>Provider=MSOLAP;Integrated Security=SSPI;Persist Security Info=True;Data Source={0};Update Isolation Level=2;Initial Catalog={1}</odc:ConnectionString>
-   <odc:CommandType>Cube</odc:CommandType>
+   <odc:ConnectionString>Provider=MSOLAP;Persist Security Info=True;Data Source={0};Update Isolation Level=2;Initial Catalog={1}</odc:ConnectionString>
+   <odc:CommandType>{2}</odc:CommandType>
+   <odc:CommandText>{3}</odc:CommandText>
+  </odc:Connection>
+ </odc:OfficeDataConnection>
+</xml>";
+
+        private static string odcQueryBody = @"<xml id=msodc><odc:OfficeDataConnection
+  xmlns:odc=""urn:schemas-microsoft-com:office:odc""
+  xmlns=""http://www.w3.org/TR/REC-html40"">
+  <odc:Connection odc:Type=""OLEDB"">
+   <odc:ConnectionString>Provider=MSOLAP;Persist Security Info=True;{0};Update Isolation Level=2;</odc:ConnectionString>
+   <odc:CommandType>{1}</odc:CommandType>
    <odc:CommandText>{2}</odc:CommandText>
   </odc:Connection>
  </odc:OfficeDataConnection>
 </xml>";
 
-var odcFooter = @"
+        private static string odcFooter = @"
 <style>
 <!--
     .ODCDataSource
@@ -120,22 +173,6 @@ function init() {
 </body> 
  
 </html>
-
 ";
-
-            var odcPath = OdcFilePath();
-            File.WriteAllText(odcPath, odcHeader + string.Format(odcBody, datasource, database, cube) + odcFooter);
-
-        }
-
-        public static string OdcFilePath()
-        {
-            // TODO - should we write to MyDocuments or ApplicationData ??
-            var myDocs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments, Environment.SpecialFolderOption.Create);
-            var dsPath = Path.Combine(myDocs, "My Data Sources", "DaxStudio.odc");
-            // ensure that the folder exists
-            Directory.CreateDirectory(dsPath);
-            return dsPath;
-        }
     }
 }

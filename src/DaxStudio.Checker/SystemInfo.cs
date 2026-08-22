@@ -1,19 +1,21 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using System;
 using System.Management;
 using System.Threading;
 
-namespace DaxStudio.Checker
+namespace DaxStudio.CheckerApp
 {
-    public static class SystemInfo
+    internal static class SystemInfo
     {
         public static void OutputOSInfo(this System.Windows.Controls.RichTextBox output)
         {
             var osInfo = GetOSInfo();
             output.AppendIndentedLine($"OSCaption       = {osInfo.Name}");
+            output.AppendIndentedLine($"OSRelease       = {osInfo.Release}");
             output.AppendIndentedLine($"OSVersion       = {osInfo.Version.ToString()}");
             output.AppendIndentedLine($"OSArchitecture  = {osInfo.Architecture}");
-            output.AppendIndentedLine($"VisibleMemoryGB = {osInfo.TotalVisibleMemory.ToString("n2")}");
-            output.AppendIndentedLine($"FreeMemoryGB    = {osInfo.TotalFreeMemory.ToString("n2")}");
+            output.AppendIndentedLine($"VisibleMemoryGB = {osInfo.TotalVisibleMemory.ToString("n2", System.Globalization.CultureInfo.InvariantCulture)}");
+            output.AppendIndentedLine($"FreeMemoryGB    = {osInfo.TotalFreeMemory.ToString("n2", System.Globalization.CultureInfo.InvariantCulture)}");
 
         }
 
@@ -33,27 +35,36 @@ namespace DaxStudio.Checker
 
         private static OSInfo GetOSInfo()
         {
-
-            ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_OperatingSystem");
             var result = new OSInfo();
-            foreach (ManagementObject os in searcher.Get())
+            using ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_OperatingSystem");
             {
-                result.Name = os["Caption"].ToString();
-                result.Version = Version.Parse(os["Version"].ToString());
-                result.Architecture = "32 bit";
-                if (result.Version.Major > 5) result.Architecture = os["OSArchitecture"].ToString();
-                continue;
+
+                foreach (ManagementObject os in searcher.Get())
+                {
+                    result.Name = os["Caption"].ToString();
+                    result.Version = Version.Parse(os["Version"].ToString());
+                    result.Architecture = "32 bit";
+                    if (result.Version.Major > 5) result.Architecture = os["OSArchitecture"].ToString();
+                    continue;
+                }
             }
 
-            searcher = new ManagementObjectSearcher("SELECT FreePhysicalMemory, TotalVisibleMemorySize FROM Win32_OperatingSystem");
-            foreach (ManagementObject os in searcher.Get())
-            {
-                result.TotalVisibleMemory = long.Parse(os["TotalVisibleMemorySize"].ToString()).KbToGb();
-                result.TotalFreeMemory = long.Parse(os["FreePhysicalMemory"].ToString()).KbToGb();
+            using (ManagementObjectSearcher searcher2 = new ManagementObjectSearcher("SELECT FreePhysicalMemory, TotalVisibleMemorySize FROM Win32_OperatingSystem"))
+            { 
+                foreach (ManagementObject os in searcher2.Get())
+                {
+                    result.TotalVisibleMemory = long.Parse(os["TotalVisibleMemorySize"].ToString()).KbToGb();
+                    result.TotalFreeMemory = long.Parse(os["FreePhysicalMemory"].ToString()).KbToGb();
 
+                }
+
+                string releaseId = Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ReleaseId", "")?.ToString();
+                if (string.IsNullOrEmpty(releaseId)) releaseId = "<Unknown>";
+                result.Release = releaseId;
+
+
+                return result;
             }
-            return result;
-
         }
 
         private struct OSInfo
@@ -63,6 +74,7 @@ namespace DaxStudio.Checker
             public string Architecture;
             public decimal TotalVisibleMemory;
             public decimal TotalFreeMemory;
+            public string Release;
         }
 
         public static decimal KbToGb(this long bytes)

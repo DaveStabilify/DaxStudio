@@ -1,0 +1,7 @@
+{
+  "profiles": {
+    "DaxStudio.Standalone": {
+      "commandName": "Project"
+    }
+  }
+}

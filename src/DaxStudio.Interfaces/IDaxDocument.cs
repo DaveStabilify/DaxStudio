@@ -1,10 +1,14 @@
-﻿using ADOTabular;
+using ADOTabular;
 
 namespace DaxStudio.Interfaces
 {
     public interface IDaxDocument
     {
-        ADOTabularConnection Connection { get; }
+        string Title { get; }
+        IConnectionManager Connection { get; }
         void OutputError(string message);
+        void OutputMessage(string message);
+        void OutputWarning(string message);
+        IDaxStudioHost Host { get; }
     }
 }

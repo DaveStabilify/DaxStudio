@@ -10,9 +10,19 @@ namespace DaxStudio.UI.Converters
 
             public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
             {
-                if (value is string &&  string.IsNullOrWhiteSpace((string)value))
+                // When invisible, default to Collapsed, but allow callers to reserve layout space by
+                // passing ConverterParameter=Hidden (keeps surrounding elements from jumping).
+                var whenHidden = string.Equals(parameter as string, "Hidden", StringComparison.OrdinalIgnoreCase)
+                    ? Visibility.Hidden
+                    : Visibility.Collapsed;
+
+                if (value == null)
                 {
-                    return Visibility.Collapsed;
+                    return whenHidden;
+                }
+                if (value is string @string &&  string.IsNullOrWhiteSpace(@string))
+                {
+                    return whenHidden;
                 }
                 return Visibility.Visible;
             }

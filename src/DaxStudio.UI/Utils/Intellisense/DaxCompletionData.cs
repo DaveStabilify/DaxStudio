@@ -6,16 +6,19 @@ using System;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using IDocument = ICSharpCode.AvalonEdit.Document.IDocument;
 
 namespace DaxStudio.UI.Utils
 {
-    public class DaxCompletionData:ICompletionData
+    public class DaxCompletionData : ICompletionData
     {
         private readonly string _text;
         private readonly object _content;
         private readonly string _description;
-        private readonly ImageSource _image;
+        private readonly string _imageResource;
+#pragma warning disable IDE0052 // Remove unread private members
         private double _priority = 120.0;
+#pragma warning restore IDE0052 // Remove unread private members
         private IInsightProvider _insightProvider;
 
         /*
@@ -33,17 +36,17 @@ _insightProvider = insightProvider;
             _text = text;
             _content = text;
             _description = text;
-            _image = null;
+            _imageResource = string.Empty;
             _priority = priority;
             _insightProvider = insightProvider;
         }
-        
+
         public DaxCompletionData(IInsightProvider insightProvider, ADOTabular.ADOTabularColumn column, DaxLineState state)
         {
             _text = string.Format("[{0}]", column.Name); //We need to use Name as Caption may be translated;
             _content = column.Caption;
-            _description = string.IsNullOrEmpty(column.Description)?null:column.Description;
-            _image = GetMetadataImage(column.MetadataImage);
+            _description = string.IsNullOrEmpty(column.Description) ? null : column.Description;
+            _imageResource = GetImageResource(column.MetadataImage);
             _priority = 50.0;
             _insightProvider = insightProvider;
             //_lineState = state;
@@ -54,7 +57,7 @@ _insightProvider = insightProvider;
             _text = dmv.Caption;
             _content = dmv.Caption;
             _description = "";  //TODO - maybe add restrictions list??
-            _image = GetMetadataImage(dmv.MetadataImage);
+            _imageResource = "table_dmvDrawingImage";
             _priority = 50.0;
             _insightProvider = insightProvider;
         }
@@ -62,8 +65,8 @@ _insightProvider = insightProvider;
         {
             _text = function.DaxName;
             _content = function.Caption;
-            _description = string.IsNullOrEmpty(function.Description)?function.Caption:function.Description;
-            _image = GetMetadataImage(function.MetadataImage);
+            _description = string.IsNullOrEmpty(function.Description) ? function.Caption : function.Description;
+            _imageResource = "functionDrawingImage";
             _insightProvider = insightProvider;
         }
 
@@ -71,8 +74,18 @@ _insightProvider = insightProvider;
         {
             _text = table.DaxName;
             _content = table.Caption;
-            _description = string.IsNullOrEmpty(table.Description)?null:table.Description;
-            _image = GetMetadataImage(table.MetadataImage);
+            _description = string.IsNullOrEmpty(table.Description) ? null : table.Description;
+            _imageResource = GetImageResource(table.MetadataImage);
+            _priority = 100.0;
+            _insightProvider = insightProvider;
+        }
+
+        public DaxCompletionData(IInsightProvider insightProvider, ADOTabular.ADOTabularCalendar calendar, DaxLineState state)
+        {
+            _text = calendar.DaxName;
+            _content = calendar.Caption;
+            _description = string.IsNullOrEmpty(calendar.Description) ? null : calendar.Description;
+            _imageResource = GetImageResource(ADOTabular.ADOTabularCalendar.MetadataImage);
             _priority = 100.0;
             _insightProvider = insightProvider;
         }
@@ -82,7 +95,7 @@ _insightProvider = insightProvider;
             CompleteInternal(textArea.Document, completionSegment, insertionRequestEventArgs);
         }
 
-        public void CompleteInternal(IDocument document, ISegment completionSegment, EventArgs insertionRequestEventArgs)
+        public void CompleteInternal(ICSharpCode.AvalonEdit.Document.IDocument document, ISegment completionSegment, EventArgs insertionRequestEventArgs)
         {
             Log.Debug("{class} {method} {start}-{end}({length})", "DaxCompletionData", "Complete", completionSegment.Offset, completionSegment.EndOffset, completionSegment.Length);
             try
@@ -91,15 +104,15 @@ _insightProvider = insightProvider;
                 var newSegment = GetPreceedingWordSegment(document, completionSegment);
                 var replaceOffset = newSegment.Offset;
                 var replaceLength = newSegment.Length;
-                var funcParamStart = Text.IndexOf("«");
+                var funcParamStart = Text.IndexOf("«", StringComparison.OrdinalIgnoreCase);
                 string insertionText = funcParamStart > 0 ? Text.Substring(0, funcParamStart) : Text;
 
-                if (insertionRequestEventArgs is TextCompositionEventArgs)
+                if (insertionRequestEventArgs is TextCompositionEventArgs args)
                 {
                     // if the insertion char is the same as the last char in the 
                     // insertion text then trim it off
-                    var insertionChar = ((TextCompositionEventArgs)insertionRequestEventArgs).Text;
-                    if (insertionText.EndsWith(insertionChar)) insertionText = insertionText.TrimEnd(insertionChar[0]);
+                    var insertionChar = args.Text;
+                    if (insertionText.EndsWith(insertionChar, StringComparison.Ordinal)) insertionText = insertionText.TrimEnd(insertionChar[0]);
                 }
                 if (completionSegment.EndOffset <= document.TextLength - 1)
                 {
@@ -116,22 +129,22 @@ _insightProvider = insightProvider;
             }
         }
 
-        private LinePosition GetPreceedingWordSegment(IDocument document, ISegment completionSegment)
+        private LinePosition GetPreceedingWordSegment(ICSharpCode.AvalonEdit.Document.IDocument document, ISegment completionSegment)
         {
             string line = "";
-            
+
             int pos = completionSegment.EndOffset - 1;
             var loc = document.GetLocation(pos);
             Log.Debug("{class} {method} pos:{position}", "DaxCompletionData", "GetPreceedingWordSegment", pos);
             var docLine = document.GetLineByOffset(pos);
             //line = textArea.Document.GetText(docLine.Offset, loc.Column);
             line = document.GetText(docLine.Offset, docLine.Length);
-            
+
             Log.Verbose("{class} {method} {message}", "DaxCompletionData", "GetPreceedingWordSegment", "line: " + line);
             var daxState = DaxLineParser.ParseLine(line, loc.Column, 0);
             //TODO - look ahead to see if we have a table/column/function end character that we should replace upto
             return DaxLineParser.GetPreceedingWordSegment(docLine.Offset, loc.Column, line, daxState);
-            
+
         }
 
         public object Content
@@ -146,7 +159,12 @@ _insightProvider = insightProvider;
 
         public System.Windows.Media.ImageSource Image
         {
-            get { return _image; }
+            get { return null; }
+        }
+
+        public string ImageResource
+        {
+            get { return _imageResource; }
         }
 
         public double Priority
@@ -198,11 +216,52 @@ _insightProvider = insightProvider;
             }
             return null;
         }
+
+        private string GetImageResource(ADOTabular.MetadataImages imageType)
+        {
+            switch (imageType)
+            {
+                case ADOTabular.MetadataImages.Column:
+                   return "columnDrawingImage";
+                case ADOTabular.MetadataImages.Database:
+                    break;
+                case ADOTabular.MetadataImages.DmvTable:
+                    return "table_dmvDrawingImage";
+                case ADOTabular.MetadataImages.Folder:
+                    break;
+                case ADOTabular.MetadataImages.Function:
+                    return "functionDrawingImage";
+                case ADOTabular.MetadataImages.HiddenColumn:
+                    return "columnDrawingImage";  // TODO - do we need a hidden version of this
+                case ADOTabular.MetadataImages.HiddenMeasure:
+                    return "measureDrawingImage";  // TODO - do we need a hidden version of this
+                case ADOTabular.MetadataImages.HiddenTable:
+                    return "tableDrawingImage";  // TODO - do we need a hidden version of this
+                case ADOTabular.MetadataImages.Hierarchy:
+                case ADOTabular.MetadataImages.Kpi:
+                    break;
+                case ADOTabular.MetadataImages.Measure:
+                    return "measureDrawingImage";
+                case ADOTabular.MetadataImages.Model:
+                    break;
+                case ADOTabular.MetadataImages.Perspective:
+                    break;
+                case ADOTabular.MetadataImages.Table:
+                    return "tableDrawingImage";
+                case ADOTabular.MetadataImages.Calendar:
+                        return "datetimeDrawingImage";
+                default:
+                    throw new NotImplementedException("Metadata image type not found");
+            }
+            return null;
+        }
     }
 
     public struct LinePosition
     {
+#pragma warning disable CA1051 // Do not declare visible instance fields
         public int Offset;
         public int Length;
+#pragma warning restore CA1051 // Do not declare visible instance fields
     }
 }

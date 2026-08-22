@@ -1,4 +1,5 @@
-﻿using System.Windows.Controls;
+﻿using DaxStudio.UI.ViewModels;
+using System.Windows.Controls;
 
 namespace DaxStudio.UI.Views
 {
@@ -12,9 +13,10 @@ namespace DaxStudio.UI.Views
             InitializeComponent();
         }
 
-        private void daxEditor_DragEnter(object sender, System.Windows.DragEventArgs e)
+        private void ContextMenu_ContextMenuOpening(object sender, ContextMenuEventArgs e)
         {
-            System.Diagnostics.Debug.WriteLine("DragEnter Event");
+            ((DocumentViewModel)DataContext).EditorContextMenuOpening();
         }
+
     }
 }

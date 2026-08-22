@@ -1,11 +1,14 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using Caliburn.Micro;
+using DaxStudio.Core.Events;
+using DaxStudio.Core.Extensions;
+using DaxStudio.Core.Interfaces;
 using DaxStudio.UI.Events;
 using DaxStudio.UI.Interfaces;
 using DaxStudio.QueryTrace;
 using DaxStudio.Interfaces;
-using DaxStudio.UI.Models;
+using DaxStudio.UI.Model;
 using System.IO;
 using Newtonsoft.Json;
 using System.Text;
@@ -14,8 +17,22 @@ using System.Linq;
 using System.ComponentModel;
 using System.Windows.Data;
 using System.Collections.ObjectModel;
-using DaxStudio.UI.Model;
 using System;
+using System.IO.Packaging;
+using System.Windows.Media;
+using DaxStudio.UI.Extensions;
+using DaxStudio.Common;
+using DaxStudio.Core;
+using DaxStudio.UI.Utils;
+using DaxStudio.Common.Enums;
+using System.Windows;
+using Serilog;
+using System.Threading.Tasks;
+using System.Threading;
+using System.Linq.Dynamic;
+#if NET472
+using SharpCompress;
+#endif
 
 namespace DaxStudio.UI.ViewModels
 {
@@ -23,48 +40,78 @@ namespace DaxStudio.UI.ViewModels
     class AllServerQueriesViewModel
         : TraceWatcherBaseViewModel, 
         ISaveState, 
-        IViewAware, 
-        IHandle<UpdateGlobalOptions>
+        IViewAware,
+        IHandle<ConnectionChangedEvent>
         
     {
-        private Dictionary<string, AggregateRewriteSummary> _rewriteEventCache = new Dictionary<string, AggregateRewriteSummary>();
-        private IGlobalOptions _globalOptions;
+        private readonly Dictionary<string, AggregateRewriteSummary> _rewriteEventCache = new Dictionary<string, AggregateRewriteSummary>();
+        private readonly Dictionary<string, QueryBeginEvent> _queryBeginCache = new Dictionary<string, QueryBeginEvent>();
+        private readonly RibbonViewModel Ribbon;
+        private object _syncLock = new object();
+
         [ImportingConstructor]
-        public AllServerQueriesViewModel(IEventAggregator eventAggregator, IGlobalOptions globalOptions) : base(eventAggregator, globalOptions)
+        public AllServerQueriesViewModel(IEventAggregator eventAggregator, IGlobalOptions globalOptions, IWindowManager windowManager, RibbonViewModel ribbon) : base(eventAggregator, globalOptions,windowManager)
         {
-            _queryEvents = new BindableCollection<QueryEvent>();
-            _globalOptions = globalOptions;
-            UpdateGlobalOptions();
-            QueryTypes = new ObservableCollection<string>();
-            QueryTypes.Add("DAX");
-            QueryTypes.Add("Dmx");
-            QueryTypes.Add("Mdx");
-            QueryTypes.Add("Sql");
+            BindingOperations.EnableCollectionSynchronization(QueryEvents, _syncLock);
+            queryEventsView = CollectionViewSource.GetDefaultView(QueryEvents);
+            Ribbon = ribbon;
+            CanCaptureDiagnostics = Ribbon?.ActiveDocument?.IsConnected??false;
+            this.ViewAttached += AllServerQueriesViewModel_ViewAttached;
+            QueryTypes = new ObservableCollection<string>
+            {
+                "DAX",
+                "DMX",
+                "MDX",
+                "SQL",
+                "Xmla" // Intentionally lowercase to reduce width
+            };
         }
 
-        private void UpdateGlobalOptions()
+        private readonly ICollectionView queryEventsView;
+
+        public ICollectionView QueryEventsView
         {
-            ShowAggregationRewrites = _globalOptions.ShowAggregationRewritesInAllQueries;
+            get { return queryEventsView; }
+        }
+
+        private void AllServerQueriesViewModel_ViewAttached(object sender, ViewAttachedEventArgs e)
+        {
+            CanCaptureDiagnostics = Ribbon?.ActiveDocument?.IsConnected ?? false;
         }
 
         public ObservableCollection<string> QueryTypes { get; set; }
 
         protected override List<DaxStudioTraceEventClass> GetMonitoredEvents()
         {
-            return new List<DaxStudioTraceEventClass>
+            var monitoredEvents = new List<DaxStudioTraceEventClass>
                 { DaxStudioTraceEventClass.QueryEnd,
+                  DaxStudioTraceEventClass.QueryBegin,
+                  DaxStudioTraceEventClass.Error,
                   DaxStudioTraceEventClass.AggregateTableRewriteQuery
+                  
             };
+
+            if (GlobalOptions.ShowXmlaInAllQueries)
+            {
+                monitoredEvents.Add(DaxStudioTraceEventClass.CommandEnd);
+            }
+
+            return monitoredEvents;
         }
 
-        // This method is called after the WaitForEvent is seen (usually the QueryEnd event)
-        // This is where you can do any processing of the events before displaying them to the UI
-        protected override void ProcessResults() {
+        protected override void ProcessSingleEvent(DaxStudioTraceEventArgs singleEvent)
+        {
+            base.ProcessSingleEvent(singleEvent);
 
             //if (IsPaused) return; // exit here if we are paused
 
-            if (Events != null) {
-                foreach (var traceEvent in Events) {
+            //if (Events != null)
+            //{
+            //    while (!Events.IsEmpty)
+            //    {
+                    Events.TryDequeue(out var traceEvent);
+
+            
                     var newEvent = new QueryEvent()
                     {
                         QueryType = traceEvent.EventSubclassName.Substring(0, 3).ToUpper(),
@@ -73,25 +120,79 @@ namespace DaxStudio.UI.ViewModels
                         Query = traceEvent.TextData,
                         Duration = traceEvent.Duration,
                         DatabaseName = traceEvent.DatabaseFriendlyName,
-                        RequestID = traceEvent.RequestID
+                        RequestID = traceEvent.RequestID,
+                        RequestParameters = traceEvent.RequestParameters,
+                        RequestProperties = traceEvent.RequestProperties,
+                        ActivityID = traceEvent.ActivityId
                     };
 
-                    switch (traceEvent.EventClass) {
+                    switch (traceEvent.EventClass)
+                    {
                         case DaxStudioTraceEventClass.QueryEnd:
+
+                            // if this is the blank query after a "clear cache and run" then skip it
+                            if (newEvent.Query?.Contains(Constants.InternalQueryHeader) ?? false) return;
+
                             // look for any cached rewrite events
-                            if (_rewriteEventCache.ContainsKey(traceEvent.RequestID))
+                            if (traceEvent.RequestID != null && _rewriteEventCache.ContainsKey(traceEvent.RequestID))
                             {
                                 var summary = _rewriteEventCache[traceEvent.RequestID];
                                 newEvent.AggregationMatchCount = summary.MatchCount;
                                 newEvent.AggregationMissCount = summary.MissCount;
                                 _rewriteEventCache.Remove(traceEvent.RequestID);
                             }
-                            QueryEvents.Insert(0, newEvent);
+
+                            // check if we have a queryBegin event cached
+                            _queryBeginCache.TryGetValue(traceEvent.RequestID ?? "", out var beginEvent);
+                            if (beginEvent != null)
+                            {
+
+                                //// Add the parameters XML after the query text
+                                //if (beginEvent.RequestParameters != null)
+                                //    newEvent.Query += Environment.NewLine +
+                                //                      Environment.NewLine +
+                                //                      beginEvent.RequestParameters +
+                                //                      Environment.NewLine;
+
+                                //// overwrite the username with the effective user if it's present
+                                //var effectiveUser = beginEvent.ParseEffectiveUsername();
+                                //if (!string.IsNullOrEmpty(effectiveUser)) newEvent.Username = effectiveUser;
+
+                                _queryBeginCache.Remove(traceEvent.RequestID);
+
+                                // copy end event properties to the begin event
+                                beginEvent.QueryEvent.Duration = newEvent.Duration;
+                                beginEvent.QueryEvent.EndTime = newEvent.EndTime;
+                                beginEvent.QueryEvent.AggregationMatchCount = newEvent.AggregationMatchCount;
+                                beginEvent.QueryEvent.AggregationMissCount = newEvent.AggregationMissCount;
+                            }
+                            else
+                            {
+                                lock (_syncLock)
+                                {
+                                    QueryEvents.Insert(0, newEvent);
+                                }
+                            }
+                            break;
+                        case DaxStudioTraceEventClass.Error:
+                            newEvent.QueryType = "ERR";
+                            lock (_syncLock)
+                            {
+                                QueryEvents.Insert(0, newEvent);
+                            }
+                            break;
+                        case DaxStudioTraceEventClass.CommandEnd:
+                            newEvent.QueryType = "Xmla";
+                            lock (_syncLock)
+                            {
+                                QueryEvents.Insert(0, newEvent);
+                            }
                             break;
                         case DaxStudioTraceEventClass.AggregateTableRewriteQuery:
                             // cache rewrite events
                             var rewriteSummary = new AggregateRewriteSummary(traceEvent.RequestID, traceEvent.TextData);
-                            if (_rewriteEventCache.ContainsKey(traceEvent.RequestID)) {
+                            if (_rewriteEventCache.ContainsKey(traceEvent.RequestID))
+                            {
                                 var summary = _rewriteEventCache[key: traceEvent.RequestID];
                                 summary.MatchCount += rewriteSummary.MatchCount;
                                 summary.MissCount += rewriteSummary.MissCount;
@@ -103,10 +204,57 @@ namespace DaxStudio.UI.ViewModels
                             }
 
                             break;
+
+                        case DaxStudioTraceEventClass.QueryBegin:
+
+                            // if the requestID is null we are running against PowerPivot which does
+                            // not seem to expose the RequestID property
+                            if (traceEvent.RequestID == null) return;
+
+                            // if this is a session refresh query then skip it
+                            if (newEvent.Query?.Contains(Constants.InternalQueryHeader) ?? false) return;
+
+                            // cache rewrite events
+                            if (_queryBeginCache.ContainsKey(traceEvent.RequestID))
+                            {
+                                // TODO - this should not happen
+                                // we should not get 2 begin events for the same request
+                                System.Diagnostics.Debug.Assert(true, "we should not have multiple QueryBegin events for the same request");
+                            }
+                            else
+                            {
+                        var newBeginEvent = new QueryBeginEvent()
+                        {
+                            RequestID = traceEvent.RequestID,
+                            Query = traceEvent.TextData,
+                            RequestProperties = traceEvent.RequestProperties,
+                            RequestParameters = traceEvent.RequestParameters,
+                            ActivityID = traceEvent.ActivityId,
+                            QueryEvent = newEvent
+                                };
+                                _queryBeginCache.Add(traceEvent.RequestID, newBeginEvent);
+
+                                // Add the parameters XML after the query text
+                                if (newEvent.RequestParameters != null)
+                                    newEvent.Query += Environment.NewLine +
+                                                      Environment.NewLine +
+                                                      newEvent.RequestParameters +
+                                                      Environment.NewLine;
+                                newEvent.Duration = -1;
+                                // overwrite the username with the effective user if it's present
+                                var effectiveUser = newEvent.ParseEffectiveUsername();
+                                if (!string.IsNullOrEmpty(effectiveUser)) newEvent.Username = effectiveUser;
+                                lock (_syncLock)
+                                {
+                                    QueryEvents.Insert(0, newEvent);
+                                }
+                            }
+
+                            break;
                     }
-                }
-                
-                Events.Clear();
+                //}
+
+                //Events.Clear();
 
                 // Clear out any cached rewrite events older than 10 minutes
                 var toRemoveFromCache = _rewriteEventCache.Where((kvp) => kvp.Value.UtcCurrentTime > DateTime.UtcNow.AddMinutes(10)).Select(c => c.Key).ToList();
@@ -118,60 +266,77 @@ namespace DaxStudio.UI.ViewModels
                 NotifyOfPropertyChange(() => QueryEvents);
                 NotifyOfPropertyChange(() => CanClearAll);
                 NotifyOfPropertyChange(() => CanCopyAll);
-            }
+                NotifyOfPropertyChange(() => CanExport);
+            //}
+
+        }
+
+        // This method is called after the WaitForEvent is seen (usually the QueryEnd event)
+        // This is where you can do any processing of the events before displaying them to the UI
+        protected override void ProcessResults() {
+
+            return;
         }
         
- 
-        private readonly BindableCollection<QueryEvent> _queryEvents;
-        
-        public new bool CanHide { get { return true; } }
-        //public event EventHandler<ViewAttachedEventArgs> ViewAttached;
-
+        public override bool CanHide { get { return true; } }
+        public override string ContentId => "all-queries-trace";
+        public override string TraceSuffix => "all";
+        public override int SortOrder => 10;
         public IObservableCollection<QueryEvent> QueryEvents 
         {
-            get {
-                return _queryEvents;
-            }
-        }
+            get;
+        } = new BindableCollection<QueryEvent>();
 
-        
 
-        public string DefaultQueryFilter { get { return "cat"; } }
+
+        public string DefaultQueryFilter => "cat";
 
         // IToolWindow interface
-        public override string Title
-        {
-            get { return "All Queries"; }
-            set { }
-        }
-
-        public override string ToolTipText
-        {
-            get
-            {
-                return "Runs a server trace to record all queries from all users for the current connection";
-            }
-            set { }
-        }
-
+        public override string Title => "All Queries";
+        public override string ImageResource => "all_queriesDrawingImage";
+        public override string ToolTipText => "Runs a server trace to record all queries from all users for the current connection";
+        public override string KeyTip => "AQ";
         public override bool FilterForCurrentSession { get { return false; } }
+
+        protected override bool IsFinalEvent(DaxStudioTraceEventArgs traceEvent)
+        {
+            return traceEvent.EventClass == DaxStudioTraceEventClass.QueryEnd ||
+                   traceEvent.EventClass == DaxStudioTraceEventClass.Error;
+        }
 
         public override void ClearAll()
         {
-            QueryEvents.Clear();
+            lock (_syncLock)
+            {
+                QueryEvents.Clear();
+            }
             NotifyOfPropertyChange(() => CanClearAll);
             NotifyOfPropertyChange(() => CanCopyAll);
+            NotifyOfPropertyChange(() => CanExport);
         }
 
         
-        public bool CanClearAll { get { return QueryEvents.Count > 0; } }
+        public bool CanClearAll => QueryEvents.Count > 0;
+
         public override void OnReset() {
             IsBusy = false;
             Events.Clear();
             ProcessResults();
         }
 
-        public QueryEvent SelectedQuery { get; set; }
+        private QueryEvent _selectedQuery; 
+        public QueryEvent SelectedQuery { get => _selectedQuery;
+            set { 
+                _selectedQuery = value;
+                NotifyOfPropertyChange();
+                NotifyOfPropertyChange(nameof(CanShowTraceDiagnostics));
+            }
+        }
+        public override void CopyEventContent()
+        {
+            Log.Warning("CopyEventContent not implemented for AllServerQueriesViewModel");
+            throw new NotImplementedException();
+        }
 
         public override bool IsCopyAllVisible { get { return true; } }
         public override bool IsFilterVisible { get { return true; } }
@@ -196,27 +361,45 @@ namespace DaxStudio.UI.ViewModels
 
             }
             sb.AppendLine();
-            _eventAggregator.PublishOnUIThread(new SendTextToEditor(sb.ToString()));
+            _eventAggregator.PublishAsync(new SendTextToEditor(sb.ToString()));
+        }
+
+
+        public override void CopyResults()
+        {
+            // not supported by AllQueries
+            throw new NotImplementedException();
         }
 
         public override void ClearFilters()
         {
             var vw = GetView() as Views.AllServerQueriesView;
-            var controller = DataGridExtensions.GetDataGridFilterQueryController(vw.QueryEvents);
+            var controller = DaxStudio.Controls.DataGridFilter.DataGridExtensions.GetDataGridFilterQueryController(vw.QueryEvents);
             controller.ClearFilter();
+        }
+
+        public void QueryDoubleClick()
+        {
+            QueryDoubleClick(SelectedQuery);
         }
 
         public void QueryDoubleClick(QueryEvent query)
         {
             if (query == null) return; // it the user clicked on an empty query exit here
-            _eventAggregator.PublishOnUIThread(new SendTextToEditor(query.Query + "\n", query.DatabaseName));
+            _eventAggregator.PublishAsync(new SendTextToEditor(query.Query + "\n", query.DatabaseName));
         }
 
         #region ISaveState methods
         void ISaveState.Save(string filename)
         {
-            var json = JsonConvert.SerializeObject(QueryEvents, Formatting.Indented);
+            string json = GetJson();
             File.WriteAllText(filename + ".allQueries", json);
+        }
+
+        public string GetJson()
+        {
+            var json =  JsonConvert.SerializeObject(QueryEvents, Formatting.Indented);
+            return json;
         }
 
         void ISaveState.Load(string filename)
@@ -224,21 +407,54 @@ namespace DaxStudio.UI.ViewModels
             filename = filename + ".allQueries";
             if (!File.Exists(filename)) return;
 
-            _eventAggregator.PublishOnUIThread(new ShowTraceWindowEvent(this));
+            _eventAggregator.PublishAsync(new ShowTraceWindowEvent(this));
             string data = File.ReadAllText(filename);
+            LoadJson(data);
+        }
+
+        public void LoadJson(string data)
+        {
             List<QueryEvent> qe = JsonConvert.DeserializeObject<List<QueryEvent>>(data);
-            
-            _queryEvents.Clear();
-            _queryEvents.AddRange(qe);
+            lock (_syncLock) { 
+                QueryEvents.Clear();
+                QueryEvents.AddRange(qe);
+            }
             NotifyOfPropertyChange(() => QueryEvents);
         }
 
-        
+        public void SavePackage(Package package)
+        {
+
+            Uri uriTom = PackUriHelper.CreatePartUri(new Uri(DaxxFormat.AllQueries, UriKind.Relative));
+            using (TextWriter tw = new StreamWriter(package.CreatePart(uriTom, "application/json", CompressionOption.Maximum).GetStream(), Encoding.UTF8))
+            {
+                tw.Write(GetJson());
+                tw.Close();
+            }
+        }
+
+        public void LoadPackage(Package package)
+        {
+            var uri = PackUriHelper.CreatePartUri(new Uri(DaxxFormat.AllQueries, UriKind.Relative));
+            if (!package.PartExists(uri)) return;
+
+            _eventAggregator.PublishAsync(new ShowTraceWindowEvent(this));
+            var part = package.GetPart(uri);
+            using (TextReader tr = new StreamReader(part.GetStream()))
+            {
+                string data = tr.ReadToEnd();
+                LoadJson(data);
+                
+            }
+
+        }
+
+
 
         public void SetDefaultFilter(string column, string value)
         {
             var vw = this.GetView() as Views.AllServerQueriesView;
-            var controller = DataGridExtensions.GetDataGridFilterQueryController(vw.QueryEvents);
+            var controller = DaxStudio.Controls.DataGridFilter.DataGridExtensions.GetDataGridFilterQueryController(vw.QueryEvents);
             var filters = controller.GetFiltersForColumns();
 
             var columnFilter = filters.FirstOrDefault(w => w.Key == column);
@@ -250,18 +466,56 @@ namespace DaxStudio.UI.ViewModels
             }
         }
 
-        public void Handle(UpdateGlobalOptions message)
+        public override bool CanExport => QueryEvents.Count > 0;
+
+        public override void ExportTraceDetails(string filePath)
         {
-            UpdateGlobalOptions();
+            File.WriteAllText(filePath, GetJson());
         }
 
-        private bool _showAggregationRewrites;
-        public bool ShowAggregationRewrites { get => _showAggregationRewrites;
+
+        public bool CanShowTraceDiagnostics => SelectedQuery != null;
+        public async void ShowTraceDiagnostics()
+        {
+            var traceDiagnosticsViewModel = new RequestInformationViewModel(SelectedQuery);
+            await WindowManager.ShowDialogBoxAsync(traceDiagnosticsViewModel, settings: new Dictionary<string, object>
+            {
+                { "WindowStyle", WindowStyle.None},
+                { "ShowInTaskbar", false},
+                { "ResizeMode", ResizeMode.NoResize},
+                { "Background", Brushes.Transparent},
+                { "AllowsTransparency",true}
+
+            });
+        }
+
+        private bool _canCaptureDiagnostics;
+        public bool CanCaptureDiagnostics
+        {
+            get => _canCaptureDiagnostics;
             set
             {
-                _showAggregationRewrites = value;
-                NotifyOfPropertyChange(() => ShowAggregationRewrites);
+                _canCaptureDiagnostics = value;
+                NotifyOfPropertyChange();
             }
+        }
+        public async Task CaptureDiagnostics()
+        {
+            // Get the list of events with any user filters applied
+            var list = this.QueryEventsView.Cast<QueryEvent>().ToList();
+            // only profile DAX/MDX queries (so exclude DMX and errors)
+            var daxQueries = list.Where(qe => qe.QueryType == "DAX" || qe.QueryType == "MDX").Cast<IQueryTextProvider>();
+
+            var capdiagDialog = new CaptureDiagnosticsViewModel(Ribbon, _globalOptions, _eventAggregator, daxQueries);
+            _eventAggregator.SubscribeOnUIThread(capdiagDialog);
+            await _windowManager.ShowDialogBoxAsync(capdiagDialog);
+            _eventAggregator.Unsubscribe(capdiagDialog);
+        }
+
+        public Task HandleAsync(ConnectionChangedEvent message, CancellationToken cancellationToken)
+        {
+            CanCaptureDiagnostics = (message.Document as DocumentViewModel)?.Connection?.IsConnected ?? false;
+            return Task.CompletedTask;
         }
 
         #endregion

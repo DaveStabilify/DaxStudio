@@ -1,15 +1,11 @@
 ﻿using ICSharpCode.AvalonEdit.Document;
 using ICSharpCode.AvalonEdit.Rendering;
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Media;
 
-namespace DAXEditor
+namespace DAXEditorControl
 {
-    class WordHighlighTransformer : DocumentColorizingTransformer
+    sealed class WordHighlighTransformer : DocumentColorizingTransformer
     {
         private HighlightDelegate _highlightFunc;
         private Brush _highlightColour;
@@ -18,18 +14,24 @@ namespace DAXEditor
             _highlightFunc = func;
             _highlightColour = highlightColour;
         }
+
+        public int FindSelectionLength { get; internal set; }
+        public int FindSelectionOffset { get; internal set; }
+        private int FindSelectionEndOffset => FindSelectionOffset + FindSelectionLength;
+        public HighlightDelegate HightlightFunction { get => _highlightFunc; internal set => _highlightFunc = value; }
+
         /*
-        protected override void Colorize(ITextRunConstructionContext context)
-        {
-            //base.Colorize(context);
-            foreach (var line in context.Document.Lines)
-            {
-                ColorizeText(line, context.Document.GetText(line));
-                
-            }
-        }
-         */ 
-            protected override void ColorizeLine(DocumentLine line)
+protected override void Colorize(ITextRunConstructionContext context)
+{
+//base.Colorize(context);
+foreach (var line in context.Document.Lines)
+{
+ColorizeText(line, context.Document.GetText(line));
+
+}
+}
+*/
+        protected override void ColorizeLine(DocumentLine line)
             {
                 
                 if (CurrentContext == null) return;
@@ -47,10 +49,15 @@ namespace DAXEditor
 
                 foreach (HighlightPosition pos in positions)
                 {
-                    
-                    base.ChangeLinePart(
-                        lineStartOffset + pos.Index, // startOffset
-                        lineStartOffset + pos.Index + pos.Length, // endOffset
+                    var startOffset = lineStartOffset + pos.Index;
+                    var endOffset = lineStartOffset + pos.Index + pos.Length;
+
+                    if ((startOffset < FindSelectionOffset 
+                        || endOffset > FindSelectionEndOffset )
+                        && FindSelectionLength > 0 ) continue; // skip positions not in the current selection
+
+                base.ChangeLinePart(
+                        startOffset, endOffset,
                         (VisualLineElement element) =>
                         {
                             element.TextRunProperties.SetBackgroundBrush(_highlightColour);

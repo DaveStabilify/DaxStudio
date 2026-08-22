@@ -1,4 +1,5 @@
-﻿using System;
+﻿using DaxStudio.UI.Controls;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -17,7 +18,7 @@ namespace DaxStudio.UI.Views
     /// <summary>
     /// Interaction logic for ServerTimesView.xaml
     /// </summary>
-    public partial class ServerTimesView : UserControl
+    public partial class ServerTimesView : ZoomableUserControl
     {
         public ServerTimesView()
         {
@@ -27,6 +28,5 @@ namespace DaxStudio.UI.Views
         private void DataGrid_RequestBringIntoView(object sender, RequestBringIntoViewEventArgs e) {
             e.Handled = true;
         }
-
     }
 }

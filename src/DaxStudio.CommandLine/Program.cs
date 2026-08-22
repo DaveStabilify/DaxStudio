@@ -1,0 +1,197 @@
+﻿using Caliburn.Micro;
+using DaxStudio.CommandLine.Commands;
+using DaxStudio.CommandLine.Help;
+using DaxStudio.CommandLine.Infrastructure;
+using DaxStudio.CommandLine.UIStubs;using DaxStudio.Common.Extensions;
+using DaxStudio.Core.Options;
+using DaxStudio.Core.Settings;
+using DaxStudio.Interfaces;
+using Microsoft.Extensions.DependencyInjection;
+using Serilog;
+using Serilog.Core;
+using Serilog.Events;
+using Serilog.Sinks.Spectre;
+using Spectre.Console.Cli;
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using StringExtensions = DaxStudio.CommandLine.Extensions.StringExtensions;
+
+
+namespace DaxStudio.CommandLine
+{
+    internal class Program
+    {
+
+        static IEventAggregator EventAggregator { get; set; } = new EventAggregator();
+        static ConsoleLogger connLogger = new ConsoleLogger();
+        static IGlobalOptions Options { get; set; }
+        static async Task<int> Main(string[] args)
+        {
+            var settingProvider = SettingsProviderFactory.GetSettingProvider();
+            Options = new OptionsModel(EventAggregator, settingProvider);
+            Options.Initialize();
+
+            // Create a type registrar and register any dependencies.
+            // A type registrar is an adapter for a DI framework.
+            var registrations = new ServiceCollection();
+            registrations.AddSingleton<IEventAggregator, EventAggregator>();
+            registrations.AddSingleton<IGlobalOptions, OptionsModel>();
+            registrations.AddSingleton<ISettingProvider>(settingProvider);
+            var registrar = new TypeRegistrar(registrations);
+            var verboseLogging = IsVerbose(args);
+            ConfigureLogging(verboseLogging);
+            EventAggregator.SubscribeOnPublishedThread(connLogger);
+
+            //ParseArgs(args);
+            var app = CreateCommands(registrar);
+            try
+            {
+                var result = await app.RunAsync(args).ConfigureAwait(true);
+                return result;
+            }
+            catch (AggregateException ex2)
+            {
+                Log.Error(ex2, "Error: {message}", ex2.GetAllMessages());
+
+                return 1;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error: {message}",ex.Message);
+                return 1;
+            }
+            finally
+            {
+                Log.CloseAndFlush();
+            }
+
+//#if DEBUG
+//            Console.ReadKey();
+//#endif
+            
+        }
+
+        private static bool IsVerbose(string[] arr)
+        {
+            for (var idx = arr.Length - 1; idx >= 0; idx--)
+            {
+                var item = arr[idx];
+                if (string.Compare(item, "-v", true) == 0 || string.Compare(item, "--verbose", true) == 0)
+                {
+                    StringExtensions.RemoveAt(ref arr, idx, 1);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static void ConfigureLogging(bool verboseLogging)
+        {
+            var outputTemplate = "{Timestamp:HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}";
+            LoggingLevelSwitch levelSwitch = new LoggingLevelSwitch();
+            levelSwitch.MinimumLevel = verboseLogging ? LogEventLevel.Verbose : LogEventLevel.Information;
+            if (verboseLogging) { outputTemplate = "{Timestamp:HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}"; }
+
+            // Log through Spectre rather than straight to Console.Out. Commands report progress
+            // with AnsiConsole.Status()/Progress(), which own a region of the screen and the cursor
+            // position within it. A sink writing directly to the console knows nothing about that
+            // region, so its output began wherever the cursor happened to be - appended to the
+            // spinner line ("Exporting to file..21:48:56 [INF] Command Complete"). Spectre's live
+            // display moves its own region out of the way before writing, so log lines always start
+            // in column zero.
+            //
+            // renderTextAsMarkup must stay false: it defaults to true, which would parse message
+            // text as Spectre markup and throw on the square brackets in any logged DAX
+            // (EVALUATE 'Product'[Color]) or on Windows paths containing them.
+            Log.Logger = new LoggerConfiguration()
+                        .WriteTo.Sink(new LiteralStringSink(
+                            new SpectreConsoleSink(outputTemplate, renderTextAsMarkup: false)))
+                        .MinimumLevel.ControlledBy(levelSwitch)
+                        .CreateLogger();
+
+        }
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments", Justification = "<Pending>")]
+        static CommandApp CreateCommands(TypeRegistrar registrar)
+        {
+            var app = new CommandApp(registrar);
+            app.Configure(config =>
+            {
+                config.CaseSensitivity(CaseSensitivity.None);
+
+                config.SetExceptionHandler((ex, resolver) =>
+                {
+                    Log.Error(ex, "Error: {message}", ex.GetInnerExceptionMessages());
+                });
+
+                config.SetHelpProvider(new CustomHelpProvider(config.Settings));
+
+                config.AddBranch<CommandSettings>("export", export =>
+                {
+                    export.AddCommand<ExportSqlCommand>("sql")
+                        .WithDescription("Exports specified tables to a SQL Server")
+                        .WithExample(new[] { "export", "sql", "\"Data Source=localhost\\sql;Initial Catalog=DataDump;Integrated Security=SSPI\"", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"" })
+                        .WithExample(new[] { "export", "sql", "\"Data Source=localhost\\sql;Initial Catalog=DataDump;Integrated Security=SSPI\"", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"", "-t", "Product \"Product Category\" \"Reseller Sales\"" })
+                        ;
+
+                    export.AddCommand<ExportCsvCommand>("csv")
+                        .WithDescription("Exports specified tables to csv files in a folder")
+                        .WithExample(new[] { "export", "csv", "c:\\temp\\export", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"" })
+                        .WithExample(new[] { "export", "csv", "c:\\temp\\export", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"", "-t", "Product \"Product Category\" \"Reseller Sales\"" });
+
+                    export.AddCommand<ExportParquetCommand>("parquet")
+                        .WithDescription("Exports specified tables to parquet files in a folder")
+                        .WithExample(new[] { "export", "parquet", "c:\\temp\\export", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"" })
+                        .WithExample(new[] { "export", "parquet", "c:\\temp\\export", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"", "-t", "Product \"Product Category\" \"Reseller Sales\"" });
+                });
+
+            config.AddCommand<FileCommand>("csv")
+                .WithDescription("Writes query results out to a .csv file")
+                .WithExample(new[] { "csv", "c:\\temp\\export\\myresults.csv", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"", "-q","\"EVALUATE 'Product Categories'\"" });
+            // the file command is an alias for the csv command
+            config.AddCommand<FileCommand>("file")
+                .WithDescription("Writes query results out to a file (csv/txt/json/parquet)")
+                .WithExample(new[] { "file", "c:\\temp\\export\\myresults.csv", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"", "-q", "\"EVALUATE 'Product Categories'\"" })
+                .WithExample(new[] { "file", "c:\\temp\\export\\myresults.parquet", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"", "-q", "\"EVALUATE 'Product Categories'\"" });
+
+            config.AddCommand<XlsxCommand>("xlsx")
+                .WithDescription("Writes query results out to an .xlsx file")
+                .WithExample(new[] { "xlsx", "c:\\temp\\export\\myresults.xlsx" , "-s", "localhost\\tabular", "-d", "\"Adventure Works\"", "-q", "\"EVALUATE 'Product Categories'\""});
+
+            config.AddCommand<VpaxCommand>("vpax")
+                .WithDescription("Generates a vpax file")
+                .WithExample(new[] { "vpax", "c:\\temp\\export\\model.vpax", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"" })
+                .WithExample(new[] { "vpax", "c:\\temp\\export\\model.vpax", "-c", "\"Data Source=localhost\\tabular;Initial Catalog=Adventure Works\"" });
+
+            config.AddCommand<AccessTokenCommand>("accesstoken")
+                            .WithDescription("Returns an access token that can be used to run other commands without repeated authentication prompts. Adding --non-interactive makes this a pre-flight check for an unattended job: it returns a non-zero exit code rather than prompting if no cached account can be used")
+                            .WithExample(new[] { "accesstoken", "-s", "asazure://australiasoutheast.asazure.windows.net/myserver", "-d", "\"Adventure Works\"" })
+                            .WithExample(new[] { "accesstoken", "-c", "\"Data Source=asazure://australiasoutheast.asazure.windows.net/myserver;Initial Catalog=Adventure Works\"" })
+                            .WithExample(new[] { "accesstoken", "-s", "powerbi://api.powerbi.com/v1.0/myorg/myworkspace", "-u", "user@contoso.com", "--non-interactive" });
+
+            config.AddCommand<AuthCommand>("auth")
+                .WithDescription("Authenticates an account without exposing its access token, or lists accounts available from the DAX Studio cache and Windows")
+                .WithExample(new[] { "auth", "-u", "user@contoso.com", "--non-interactive" })
+                .WithExample(new[] { "auth", "--list" });
+
+            config.AddCommand<BenchmarkCommand>("benchmark")
+                .WithDescription("Runs a DAX query benchmark with cold and warm cache timings")
+                .WithExample(new[] { "benchmark", "c:\\temp\\results.csv", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"", "-f", "query.dax", "--cold", "5", "--warm", "5" });
+#if DEBUG
+                // Custom Trace
+                config.AddCommand<CustomTraceCommand>("customtrace")
+    .WithDescription("Starts a custom trace")
+    .WithExample(new[] { "customtrace", "refresh trace", "c:\\temp\\refresh.json", "-s", "localhost\\tabular", "-d", "\"Adventure Works\"" })
+    .WithExample(new[] { "customtrace", "refresh trace", "c:\\temp\\refresh.json", "-c", "\"Data Source=localhost\\tabular;Initial Catalog=Adventure Works\"" });
+
+
+                // Capture Diagnostics
+#endif
+            });
+            
+            return app;
+        }
+
+    }
+}

@@ -1,4 +1,5 @@
-﻿using DaxStudio.Interfaces;
+using DaxStudio.Core.Enums;
+using DaxStudio.Interfaces;
 using Newtonsoft.Json;
 using System;
 using Caliburn.Micro;
@@ -34,6 +35,17 @@ namespace DaxStudio.UI.Model
         [JsonIgnore]
         public FileIcons Icon { get { return !IsDiskFileName || Path.GetExtension(OriginalFileName).ToLower() == ".dax" ? FileIcons.Dax : FileIcons.Other; } }
 
+        [JsonIgnore]
+        public string ImageResource
+        {
+            get
+            {
+                if (!IsDiskFileName) return "daxDrawingImage";
+                if(Path.GetExtension(OriginalFileName).ToLower() == ".dax") return "daxDrawingImage";
+                if (Path.GetExtension(OriginalFileName).ToLower() == ".daxx") return "daxxDrawingImage";
+                return "fileDrawingImage";
+            }
+        }
 
         private bool _shouldOpen = true;
         [JsonIgnore]

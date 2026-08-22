@@ -1,14 +1,11 @@
-﻿using Caliburn.Micro;
+﻿using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
-using System;
-using System.Collections.Generic;
-using System.Linq;
+using DaxStudio.UI.Model;
 using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interactivity;
+using Microsoft.Xaml.Behaviors;
 
 namespace DaxStudio.UI.Behaviours
 {
@@ -51,13 +48,13 @@ namespace DaxStudio.UI.Behaviours
                 {
                     var msg = item as OutputMessage;
                     sb.Append(msg.Start);
-                    sb.Append("\t");
+                    sb.Append('\t');
                     sb.Append(msg.DurationString);
-                    sb.Append("\t");
+                    sb.Append('\t');
                     sb.Append(msg.Text);
-                    sb.Append("\n");
+                    sb.Append('\n');
                 }
-                System.Windows.Clipboard.SetText(sb.ToString());
+                ClipboardManager.SetText(sb.ToString());
                 e.Handled = true;
             }
                 

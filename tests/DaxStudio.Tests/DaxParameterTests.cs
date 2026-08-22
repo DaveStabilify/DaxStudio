@@ -1,10 +1,15 @@
 ﻿using System;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using DaxStudio.Core.Model;
+using DaxStudio.Core.Utils;
 using DaxStudio.UI.Utils;
 using System.Text;
 using DaxStudio.UI.Model;
 using DaxStudio.Tests.Assertions;
 using DaxStudio.Tests.Helpers;
+using Caliburn.Micro;
+using System.Collections.Generic;
+using NSubstitute;
 
 namespace DaxStudio.Tests
 {
@@ -129,23 +134,42 @@ SUMMARIZE (
         , pathcontains(""1|0"", 'Orders'[Interactions7DaysFlag]) --0|1--
         , pathcontains(""Advocate|Detractor|No Survey Response|Passive"", 'NPS Result'[NPS Result]) --Advocate--
 )";
+
+        IEventAggregator mockEventAggregator;
+        [TestInitialize]
+        public void InitializeTest()
+        {
+            mockEventAggregator = Substitute.For<IEventAggregator>();
+        }
+
         [TestMethod]
         public void TestQueryParamParsing()
         {
             var qi = new QueryInfo(testParam, new Mocks.MockEventAggregator());
             //var dict = DaxHelper.ParseParams(testParam, new Mocks.MockEventAggregator() );
-            Assert.AreEqual(14, qi.Parameters.Count);
+            Assert.HasCount(14, qi.Parameters);
         }
 
         [TestMethod]
         public void TestQueryParamParsingShouldSkipStrings()
         {
-            var testQuery = @"FILTER(
+            var testQuery2 = @"FILTER(
 table,
 table[email] = ""abcdefg @gmail.com"" || table[email] = @param)";
-            var qi = new QueryInfo(testQuery, new Mocks.MockEventAggregator());
+            var qi = new QueryInfo(testQuery2, mockEventAggregator);
             //var dict = DaxHelper.ParseParams(testParam, new Mocks.MockEventAggregator() );
-            Assert.AreEqual(1, qi.Parameters.Count);
+            Assert.HasCount(1, qi.Parameters);
+        }
+
+
+        [TestMethod]
+        public void TestQueryParamParsingShouldSkipColumnNameStrings()
+        {
+            var testQuery = @"EVALUATE
+ADDCOLUMNS ( {""Hello""}, ""@test"", 42 )";
+            var qi = new QueryInfo(testQuery, mockEventAggregator);
+            //var dict = DaxHelper.ParseParams(testParam, new Mocks.MockEventAggregator() );
+            Assert.IsEmpty(qi.Parameters);
         }
 
         [TestMethod]
@@ -154,9 +178,9 @@ table[email] = ""abcdefg @gmail.com"" || table[email] = @param)";
             var testQuery = @"FILTER(
 table,
 't@ble'[email] = ""abcdefg@gmail.com"" || table[email] = @param)";
-            var qi = new QueryInfo(testQuery, new Mocks.MockEventAggregator());
+            var qi = new QueryInfo(testQuery, mockEventAggregator);
             //var dict = DaxHelper.ParseParams(testParam, new Mocks.MockEventAggregator() );
-            Assert.AreEqual(1, qi.Parameters.Count);
+            Assert.HasCount(1, qi.Parameters);
         }
 
         [TestMethod]
@@ -165,9 +189,9 @@ table,
             var testQuery = @"FILTER(
 table,
 table[em@il] = ""abcdefg@gmail.com"" || table[email] = @param)";
-            var qi = new QueryInfo(testQuery, new Mocks.MockEventAggregator());
+            var qi = new QueryInfo(testQuery, mockEventAggregator);
             //var dict = DaxHelper.ParseParams(testParam, new Mocks.MockEventAggregator() );
-            Assert.AreEqual(1, qi.Parameters.Count);
+            Assert.HasCount(1, qi.Parameters);
         }
 
         [TestMethod]
@@ -176,7 +200,7 @@ table[em@il] = ""abcdefg@gmail.com"" || table[email] = @param)";
             var qi = new QueryInfo(testQuery + "\n" + testParam, new Mocks.MockEventAggregator());
             //var dict = DaxHelper.ParseParams(testParam, new Mocks.MockEventAggregator());
             //var finalQry = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
-            var actualQry = qi.ProcessedQuery;//.Replace("\n", "");
+            var actualQry = qi.QueryWithMergedParameters;//.Replace("\n", "");
             StringAssertion.ShouldEqualWithDiff(expectedQry.NormalizeNewline(), actualQry.NormalizeNewline(), DiffStyle.Full);
         }
 
@@ -185,7 +209,7 @@ table[em@il] = ""abcdefg@gmail.com"" || table[email] = @param)";
         {
             var qi = new QueryInfo(testQuery + "\n" + testParam, new Mocks.MockEventAggregator());
             //var finalQry = DaxHelper.PreProcessQuery(testQuery + "\n" + testParam, new Mocks.MockEventAggregator());
-            StringAssertion.ShouldEqualWithDiff(expectedQry.NormalizeNewline(), qi.ProcessedQuery.NormalizeNewline(), DiffStyle.Full);
+            StringAssertion.ShouldEqualWithDiff(expectedQry.NormalizeNewline(), qi.QueryWithMergedParameters.NormalizeNewline(), DiffStyle.Full);
             
         }
 
@@ -205,7 +229,9 @@ table[em@il] = ""abcdefg@gmail.com"" || table[email] = @param)";
             //var dict = DaxHelper.ParseParams(testAmbiguousParam, new Mocks.MockEventAggregator());
             //var finalQuery = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
             var qi = new QueryInfo(testQuery + "\n" + testAmbiguousParam, new Mocks.MockEventAggregator());
-            Assert.AreEqual("[value1]:\"Value1\" [value2]:\"Value2\" [value2]:(\"Value2\") [value1]:\"Value1\", \"Value1\"", qi.ProcessedQuery);
+
+            Assert.AreEqual("[value1]:\"Value1\" [value2]:\"Value2\" [value2]:(\"Value2\") [value1]:\"Value1\", \"Value1\"", qi.QueryWithMergedParameters);
+            //              "[value1]:Value1 [value2]:Value2 [value2]:(Value2) [value1]:Value1, Value1"
         }
 
         [TestMethod]
@@ -225,11 +251,179 @@ table[em@il] = ""abcdefg@gmail.com"" || table[email] = @param)";
 
             //var dict = DaxHelper.ParseParams(testAmbiguousParam, new Mocks.MockEventAggregator());
             //var finalQuery = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
-            var finalQuery = qi.ProcessedQuery;
+            var finalQuery = qi.QueryWithMergedParameters;
 
             Assert.AreEqual("[value1]:\"Value1\" [value2]:\"Value2\" [value2]:(\"Value2\") [value1]:\"Value1\", \"Value1\"", finalQuery);
-            Assert.AreEqual(false, qi.NeedsParameterValues);
+            Assert.IsFalse(qi.NeedsParameterValues);
         }
+
+        [TestMethod]
+        public void TestParamInTableConstructor()
+        {
+            string testQuery = @"evaluate {@tmp}
+<Parameters xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns=""urn:schemas-microsoft-com:xml-analysis"">  <Parameter>
+    <Name>tmp</Name>
+    <Value xsi:type=""xsd:string"">1</Value>
+    </Parameter>
+  </Parameters>";
+            var qi = new QueryInfo(testQuery,  new Mocks.MockEventAggregator());
+
+            //var dict = DaxHelper.ParseParams(testAmbiguousParam, new Mocks.MockEventAggregator());
+            //var finalQuery = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
+            var finalQuery = qi.QueryWithMergedParameters;
+
+            Assert.IsFalse(qi.NeedsParameterValues);
+            Assert.AreEqual("evaluate {\"1\"}", finalQuery);
+            
+        }
+
+        [TestMethod]
+        public void TestStronglyTypedParams()
+        {
+            string testQuery = @"<Parameters xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns=""urn:schemas-microsoft-com:xml-analysis"">
+  <Parameter>
+    <Name>p1</Name>
+    <Value xsi:type=""xsd:string"">abc</Value>
+  </Parameter>
+  <Parameter>
+    <Name>p2</Name>
+    <Value xsi:type=""xsd:int"">1</Value>
+  </Parameter>
+  <Parameter>
+    <Name>p3</Name>
+    <Value xsi:type=""xsd:double"">2.0</Value>
+  </Parameter>
+</Parameters>";
+            //var qi = new QueryInfo(testQuery, false, false, new Mocks.MockEventAggregator());
+            var dict = new Dictionary<string, QueryParameter>();
+            DaxHelper.ParseParams(testQuery,dict, new Mocks.MockEventAggregator());
+            //var finalQuery = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
+            //var finalQuery = qi.ProcessedQuery;
+
+            Assert.AreEqual("abc", dict["p1"].Value);
+            Assert.AreEqual(1, dict["p2"].Value);
+            Assert.AreEqual(2.0d, dict["p3"].Value);
+        }
+
+        [TestMethod]
+        public void TestParamIntParamInTableConstructor()
+        {
+            string testQuery = @"evaluate {@tmp}
+<Parameters xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns=""urn:schemas-microsoft-com:xml-analysis"">  <Parameter>
+    <Name>tmp</Name>
+    <Value xsi:type=""xsd:int"">1</Value>
+    </Parameter>
+  </Parameters>";
+            var qi = new QueryInfo(testQuery, new Mocks.MockEventAggregator());
+
+            //var dict = DaxHelper.ParseParams(testAmbiguousParam, new Mocks.MockEventAggregator());
+            //var finalQuery = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
+            var finalQuery = qi.QueryWithMergedParameters;
+
+            Assert.IsFalse(qi.NeedsParameterValues);
+            Assert.AreEqual("evaluate {1}", finalQuery);
+
+        }
+
+        [TestMethod]
+        public void TestQueryWithIntYearParameter()
+        {
+            string testQuery = @"
+EVALUATE
+SUMMARIZECOLUMNS (
+    ROLLUPADDISSUBTOTAL ( 'Date'[Calendar Year], ""Date_Calendar_Year_IsSubtotal\"" ),
+    FILTER(
+        ALL('Date'[Calendar Year]),
+        (('Date'[Calendar Year] = @PARAMFBA4F4C0))
+    ),
+    ""Internet Total Sales"", [Internet Total Sales]
+)
+ORDER BY
+    [Date_Calendar_Year_IsSubtotal] DESC,
+    'Date'[Calendar Year]
+
+<Parameters xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns=""urn:schemas-microsoft-com:xml-analysis"" >     
+    <Parameter>
+        <Name>PARAMFBA4F4C0</Name>
+        <Value xsi:type=""xsd:int"">2003</Value>
+    </Parameter>
+</Parameters>
+";
+
+            string expectedQuery = @"
+EVALUATE
+SUMMARIZECOLUMNS (
+    ROLLUPADDISSUBTOTAL ( 'Date'[Calendar Year], ""Date_Calendar_Year_IsSubtotal\"" ),
+    FILTER(
+        ALL('Date'[Calendar Year]),
+        (('Date'[Calendar Year] = 2003))
+    ),
+    ""Internet Total Sales"", [Internet Total Sales]
+)
+ORDER BY
+    [Date_Calendar_Year_IsSubtotal] DESC,
+    'Date'[Calendar Year]";
+            var qi = new QueryInfo(testQuery, new Mocks.MockEventAggregator());
+
+            //var dict = DaxHelper.ParseParams(testAmbiguousParam, new Mocks.MockEventAggregator());
+            //var finalQuery = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
+            var finalQuery = qi.QueryWithMergedParameters;
+
+            Assert.IsFalse(qi.NeedsParameterValues);
+            Assert.AreEqual(expectedQuery, finalQuery);
+
+        }
+
+        [TestMethod]
+        public void TestQueryWithSquareBracketString() {
+            string testQuery = @"EVALUATE
+VAR parameter = @test
+VAR bracket = ""]""
+RETURN bracket
+";
+
+            var qi = new QueryInfo(testQuery, new Mocks.MockEventAggregator());
+
+            //var dict = DaxHelper.ParseParams(testAmbiguousParam, new Mocks.MockEventAggregator());
+            //var finalQuery = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
+            var finalQuery = qi.QueryWithMergedParameters;
+
+            Assert.IsTrue(qi.NeedsParameterValues);
+            Assert.HasCount(1, qi.Parameters);
+            Assert.AreEqual("test", qi.Parameters["test"].Name);
+
+        }
+
+        [TestMethod]
+        public void TestQueryWithDatesBetween()
+        {
+            var testQuery = @"/* Query Builder */
+EVALUATE
+SUMMARIZECOLLNNS(
+Transactions [Index] ,
+Transactions [document_date] ,
+Transactions [document—no] ,
+Transactions [Descri pti on] ,
+KEEPFILTERS( TREATAS( {@cust}, Customers [customer_lookup] ) )
+KEEPFILTERS( FILTER( ALL( Dates[Date] ) , Dates[Date] >= VALUE(@Start_Date) && Dates[Date] <= (@End_Date) )),
+""Amount"" , [Amount] 
+)";
+
+            var qi = new QueryInfo(testQuery, new Mocks.MockEventAggregator());
+
+            //var dict = DaxHelper.ParseParams(testAmbiguousParam, new Mocks.MockEventAggregator());
+            //var finalQuery = DaxHelper.replaceParamsInQuery(new StringBuilder(testQuery), dict);
+            var finalQuery = qi.QueryWithMergedParameters;
+
+            Assert.IsTrue(qi.NeedsParameterValues);
+            Assert.HasCount(3, qi.Parameters);
+            Assert.AreEqual("cust", qi.Parameters["cust"].Name);
+            Assert.AreEqual("Start_Date", qi.Parameters["Start_Date"].Name);
+            Assert.AreEqual("End_Date", qi.Parameters["End_Date"].Name);
+
+        }
+
+    
     }
 }
 

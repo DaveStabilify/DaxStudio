@@ -5,8 +5,10 @@ using ADOTabular.AdomdClientWrappers;
 using Microsoft.Office.Tools.Ribbon;
 using Serilog;
 using System.IO;
-using DaxStudio.UI.Utils;
 using DaxStudio.Common;
+//using Microsoft.Identity.Client;
+using Serilog.Events;
+using DaxStudio.ExcelAddin.Xmla;
 
 namespace DaxStudio.ExcelAddin
 {
@@ -15,7 +17,7 @@ namespace DaxStudio.ExcelAddin
         private static bool _inShutdown;
         private static DaxStudioLauncher _launcher;
         private bool _debugLogEnabled;
-        public ILogger log;
+        private ILogger log;
         private void ThisAddInStartup(object sender, EventArgs e)
         {
             try
@@ -25,24 +27,50 @@ namespace DaxStudio.ExcelAddin
                 currentDomain.AssemblyResolve += currentDomain_AssemblyResolve;
                 currentDomain.UnhandledException += CurrentDomain_UnhandledException;
 
-                var config = new LoggerConfiguration().ReadFrom.AppSettings();
-                if (System.Windows.Input.Keyboard.IsKeyDown(Constants.LoggingHotKey1)
-                    || System.Windows.Input.Keyboard.IsKeyDown(Constants.LoggingHotKey2))
+                var levelSwitch = new Serilog.Core.LoggingLevelSwitch(); // Serilog.Events.LogEventLevel.Error);
+                var config = new LoggerConfiguration()
+                                    .MinimumLevel.ControlledBy(levelSwitch)
+                                    .ReadFrom.AppSettings();
+#if DEBUG
+                levelSwitch.MinimumLevel = LogEventLevel.Verbose;
+#endif
+
+                if (System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift)
+                    || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightShift))
                 {
                     loggingKeyDown = true;
                     _debugLogEnabled = true;
-                    var logPath = Path.Combine(Environment.ExpandEnvironmentVariables(Constants.LogFolder)
+
+                    // increase the default log level when the logging hot key is held down
+                    levelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Debug;
+                    Log.Debug("Debug Logging Enabled");
+
+                } 
+
+                // force logging to rolling log file (in case the app settings has switched this off)
+                var logPath = Path.Combine(ApplicationPaths.LogPath
                                                 , Constants.ExcelLogFileName);
-                    config.WriteTo.RollingFile(logPath, restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Debug, retainedFileCountLimit: 10);
-                    
-                }
+                config.WriteTo.File(logPath, 
+                                    rollingInterval: RollingInterval.Day, 
+                                    retainedFileCountLimit: 10);
+
                 log = config.CreateLogger();
                 Log.Logger = log;
                 Log.Information("============ Excel Add-in Startup =============");
+                Log.Information($"DAXStudio.dll Version: { System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(4)}");
                 ExcelInfo.WriteToLog(this);
+
+#if DEBUG
+                //var svr = new AmoWrapper.AmoServer(AmoWrapper.AmoType.AnalysisServices);
+                //var path = @"C:\Program Files\Common Files\Microsoft Shared\OFFICE16\DataModelv16";
+                //var path2 = NativeMethods.GetProgramFilesCommonVfsPath();
+                //ExcelAmoWrapper.UpdatePathForVfs(ref path2);
+
+#endif
                 if (loggingKeyDown)
                 {
                     if (_ribbon != null) _ribbon.DebugLoggingEnabled = true;
+                    levelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Verbose;
                     Log.Information($"Logging enabled by {Constants.LoggingHotKeyName} Key at startup");
                 }
                 CreateRibbonObjects();
@@ -99,7 +127,19 @@ namespace DaxStudio.ExcelAddin
                     return ass;
                 }
 
+                if (args.Name.Contains("Microsoft.Excel.Amo.Core,"))
+                {
+                    var ass = DaxStudio.ExcelAddin.Xmla.ExcelAmoWrapper.ExcelAmoCoreAssembly;
+                    Log.Verbose("{class} {method} {assembly}", "ThisAddin", "currentDomain_AssemblyResolve", "Microsoft.Excel.Amo Resolved");
+                    return ass;
+                }
 
+                if (args.Name.Contains("Microsoft.Excel.Tabular,"))
+                {
+                    var ass = DaxStudio.ExcelAddin.Xmla.ExcelAmoWrapper.ExcelTabularAssembly;
+                    Log.Verbose("{class} {method} {assembly}", "ThisAddin", "currentDomain_AssemblyResolve", "Microsoft.Excel.Amo Resolved");
+                    return ass;
+                }
 
                 return null;
             }
@@ -110,7 +150,7 @@ namespace DaxStudio.ExcelAddin
                     Log.Error("{class} {method} {args_Name} {ex_Message}","ThisAddIn","currentDomain_AssemblyResolve",args.Name,ex.Message + "\n" + ex.StackTrace);
                     
                     MessageBox.Show(
-                        string.Format("Problem during AssemblyResolve in Dax Studio\r\nFor Assembly {0} :\r\n{1}\r\n{2} "
+                        string.Format("Problem during AssemblyResolve in DAX Studio\r\nFor Assembly {0} :\r\n{1}\r\n{2} "
                             , args.Name
                             , ex.Message 
                             , ex.StackTrace),

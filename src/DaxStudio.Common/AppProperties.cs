@@ -1,10 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace DaxStudio.Common
+﻿namespace DaxStudio.Common
 {
     public static class AppProperties
     {
@@ -13,9 +7,13 @@ namespace DaxStudio.Common
         internal const string PortNumber = "PortNumber";
         internal const string FileName = "FileName";
         internal const string CrashTest = "CrashTest";
-        public static CmdLineArgs Args(this System.Windows.Application app)
-        {
-            return new CmdLineArgs(app);
-        }
+        internal const string Database = "Database";
+        internal const string Reset = "Reset";
+        internal const string Server = "Server";
+        internal const string ShowHelp = "ShowHelp";
+        internal const string NoPreview = "NoPreview";
+        internal const string Query = "Query";
+        internal const string FromUri = "FromUri";
+
     }
 }

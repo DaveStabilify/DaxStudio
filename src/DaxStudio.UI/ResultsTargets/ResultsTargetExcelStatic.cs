@@ -1,11 +1,13 @@
-﻿using System;
 using System.ComponentModel.Composition;
 using System.Threading.Tasks;
 using DaxStudio.Interfaces;
 using System.Diagnostics;
 using DaxStudio.UI.Interfaces;
+using System.Data;
+using Serilog;
+using DaxStudio.Core.Interfaces;
 
-namespace DaxStudio.UI.Model
+namespace DaxStudio.UI.ResultsTargets
 {
     // This is the target which writes the static results out to
     // a range in Excel
@@ -20,54 +22,53 @@ namespace DaxStudio.UI.Model
         }
 
         #region Standard Properties
-        public string Name => "Static";
+        public string Name => "Excel (Static)";
         public string Group => "Excel";
         public bool IsDefault => false;
         public bool IsAvailable => _host.IsExcel;
-        public int DisplayOrder => 110;
+        public int DisplayOrder => 310;
         public string Message => "Static Results will be sent to Excel";
-        public OutputTargets Icon => OutputTargets.Static;
-
+        public OutputTarget Icon => OutputTarget.Static;
+        public string ImageResource => "results_excelDrawingImage";
+        public string Tooltip => "Sends a copy of the results to Excel";
         public bool IsEnabled => true;
 
         public string DisabledReason => "";
         #endregion
 
-        public Task OutputResultsAsync(IQueryRunner runner)
+        public async Task OutputResultsAsync(IQueryRunner runner, IQueryTextProvider textProvider, string filename)
         {
-            return Task.Run(() =>
+            await Task.Run(async () =>
                 {
-                    try
+                    runner.ClearQueryResults();
+
+                    var sw = Stopwatch.StartNew();
+
+                    var dq = textProvider.QueryText;
+
+                    DataTable res = await runner.ExecuteDataTableQueryAsync(dq);
+
+                    if (res == null || res.Rows?.Count == 0)
                     {
-                        runner.OutputMessage("Query Started");
-                        var sw = Stopwatch.StartNew();
-
-                        var dq = runner.QueryText;
-                        var res = runner.ExecuteDataTableQuery(dq);
-
-                        sw.Stop();
-                        var durationMs = sw.ElapsedMilliseconds;
-
-
-                        // write results to Excel
-                        runner.Host.Proxy.OutputStaticResultAsync(res, runner.SelectedWorksheet).ContinueWith((ascendant) => {
-                            runner.OutputMessage(
-                                string.Format("Query Completed ({0:N0} row{1} returned)", res.Rows.Count,
-                                              res.Rows.Count == 1 ? "" : "s"), durationMs);
-                            runner.RowCount = res.Rows.Count;
-                            runner.ActivateOutput();
-                            runner.SetResultsMessage("Static results sent to Excel", OutputTargets.Static);
-                        },TaskScheduler.Default);
-                    }
-                    catch (Exception ex)
-                    {
+                        Log.Warning("{class} {method} {message}", nameof(ResultsTargetExcelStatic), nameof(OutputResultsAsync), "Query Result DataTable has no rows");
                         runner.ActivateOutput();
-                        runner.OutputError(ex.Message);
+                        runner.OutputWarning("Unable to send results to Excel as there are no rows in the result set");
+                        return;
                     }
-                    finally
-                    {
-                        runner.QueryCompleted();
-                    }
+
+                    sw.Stop();
+                    var durationMs = sw.ElapsedMilliseconds;
+
+                    // write results to Excel
+                    await runner.Host.Proxy.OutputStaticResultAsync(res, runner.SelectedWorksheet); //.ContinueWith((ascendant) => {
+                        
+                    runner.OutputMessage(
+                        string.Format("Query Completed ({0:N0} row{1} returned)", res.Rows.Count,
+                                        res.Rows.Count == 1 ? "" : "s"), durationMs);
+                    runner.RowCount = res.Rows.Count;
+                    runner.ActivateOutput();
+                    runner.SetResultsMessage("Static results sent to Excel", OutputTarget.Static);
+
                 });
         }
 

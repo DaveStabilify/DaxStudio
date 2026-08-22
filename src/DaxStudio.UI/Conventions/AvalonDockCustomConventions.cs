@@ -2,11 +2,11 @@
 using System.Linq;
 using System.Windows;
 using System.Windows.Markup;
-using Xceed.Wpf.AvalonDock;
-using Xceed.Wpf.AvalonDock.Layout;
+using AvalonDock;
+using AvalonDock.Layout;
 using Caliburn.Micro;
 
-namespace DaxStudio.UI
+namespace DaxStudio.UI.Conventions
 {
 
 

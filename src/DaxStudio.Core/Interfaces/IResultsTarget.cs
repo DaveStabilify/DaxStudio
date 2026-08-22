@@ -1,0 +1,26 @@
+
+using DaxStudio.Interfaces;
+using System;
+using System.Threading.Tasks;
+using DaxStudio.Core.Interfaces;
+
+namespace DaxStudio.Core.Interfaces
+{
+    public interface IResultsTarget
+    {
+        string Name { get; }
+        string Group { get; }
+        //void OutputResults(IQueryRunner runner );
+        Task OutputResultsAsync(IQueryRunner runner, IQueryTextProvider provider, string filename);
+        bool IsDefault { get; }
+        bool IsAvailable { get; }
+        bool IsEnabled { get; }
+        string DisabledReason { get; }
+        int DisplayOrder { get; }
+
+        string Message { get; }
+        OutputTarget Icon { get; }
+        string ImageResource { get; }
+        string Tooltip { get; }
+    }
+}

@@ -1,4 +1,8 @@
-﻿using System.Windows.Controls;
+﻿using DaxStudio.UI.Model;
+using DaxStudio.UI.ViewModels;
+using Serilog;
+using System.Windows.Controls;
+using System.Windows.Input;
 
 namespace DaxStudio.UI.Views
 {
@@ -10,6 +14,92 @@ namespace DaxStudio.UI.Views
         public RibbonView()
         {
             InitializeComponent();
+        }
+
+        #region "QuickAccessToolbar Event Handlers"
+        // The following 4 event handlers are only used for the Quick Access Buttons in the title bar
+        // Adding the handlers here does violate MVVM, but I have been unable to get the bindings to
+        // work consistently any other way and given that we are highly unlikely to create alternate
+        // views for the RibbonViewModel this is probably not a big issue
+        private async void NewQuery_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+
+            var vm = this.DataContext as RibbonViewModel;
+            if (vm != null)
+            {
+                await vm.NewQuery();
+            }
+            else
+            {
+                Log.Error("{class} {method} Pmessage}", nameof(RibbonView), nameof(NewQuery_Click), "Unable to get an instance of RibbonViewModel");
+            }
+        }
+
+        private void NewConnectedQuery_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+
+            var vm = this.DataContext as RibbonViewModel;
+            if (vm != null)
+            {
+                vm.NewQueryWithCurrentConnection();
+            }
+            else
+            {
+                Log.Error("{class} {method} Pmessage}", nameof(RibbonView), nameof(NewConnectedQuery_Click), "Unable to get an instance of RibbonViewModel");
+            }
+        }
+
+        private void Save_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+
+            var vm = this.DataContext as RibbonViewModel;
+            if (vm != null)
+            {
+                vm.Save();
+            }
+            else
+            {
+                Log.Error("{class} {method} Pmessage}", nameof(RibbonView), nameof(Save_Click), "Unable to get an instance of RibbonViewModel");
+            }
+        }
+        #endregion
+
+        private void ChangeTheme_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+            var vm = this.DataContext as RibbonViewModel;
+            if (vm != null)
+            {
+                vm.ToggleTheme();
+            }
+            else
+            {
+                Log.Error("{class} {method} {message}", nameof(RibbonView), nameof(NewConnectedQuery_Click), "Unable to get an instance of RibbonViewModel");
+            }
+        }
+
+        private void RunStyles_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+            var vm = this.DataContext as RibbonViewModel;
+            var button = sender as Button;
+            var rs = button?.DataContext as RunStyle;
+            if (vm != null)
+            {
+                vm.RunStyleClicked(rs);
+                e.Handled = false;
+            }
+            else
+            {
+                Log.Error("{class} {method} {message}", nameof(RibbonView), nameof(RunStyles_Click), "Unable to get an instance of RibbonViewModel");
+            }
+        }
+
+        private void RecentFilesSearch_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Escape) return;
+            if (!(sender is TextBox tb) || string.IsNullOrEmpty(tb.Text)) return;
+
+            tb.Text = string.Empty;
+            e.Handled = true;
         }
     }
 }

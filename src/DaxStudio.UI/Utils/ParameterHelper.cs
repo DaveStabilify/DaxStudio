@@ -1,4 +1,5 @@
-﻿using DaxStudio.UI.Model;
+using DaxStudio.Core.Model;
+using DaxStudio.UI.Model;
 using DaxStudio.UI.ViewModels;
 using System.Text;
 
@@ -12,7 +13,7 @@ namespace DaxStudio.UI.Utils
             document.AppendText(paramXml);
         }
 
-        private static string GetParameterXml(QueryInfo queryInfo)
+        public static string GetParameterXml(QueryInfo queryInfo)
         {
             if (queryInfo.Parameters.Count == 0) return string.Empty;
 
@@ -22,8 +23,8 @@ namespace DaxStudio.UI.Utils
             foreach (var p in queryInfo.Parameters)
             {
                 sbParams.Append("  <Parameter>\n");
-                sbParams.AppendFormat("    <Name>{0}</Name>\n", p.Value.Name);
-                sbParams.AppendFormat("    <Value xsi:type=\"xsd: string\">{0}</Value>\n", p.Value.Value);
+                sbParams.AppendFormat("    <Name>{0}</Name>\n", System.Security.SecurityElement.Escape(p.Value.Name));
+                sbParams.AppendFormat("    <Value xsi:type=\"xsd:{0}\">{1}</Value>\n", p.Value?.TypeName?? "xsd:string", System.Security.SecurityElement.Escape(p.Value?.Value?.ToString()));
                 sbParams.Append("  </Parameter>\n");
             }
             sbParams.Append("</Parameters>");

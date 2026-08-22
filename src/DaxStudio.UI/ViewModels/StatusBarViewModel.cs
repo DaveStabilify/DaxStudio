@@ -1,10 +1,14 @@
-﻿using System;
+using System;
 using System.ComponentModel.Composition;
 using System.Globalization;
-using ADOTabular;
+using System.Threading;
+using System.Threading.Tasks;
 using Caliburn.Micro;
+using DaxStudio.Interfaces;
+using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
-using DaxStudio.UI.Utils;
+using DaxStudio.UI.Model;
+using Serilog;
 
 namespace DaxStudio.UI.ViewModels
 {
@@ -14,12 +18,15 @@ namespace DaxStudio.UI.ViewModels
         , IHandle<DocumentConnectionUpdateEvent>
         , IHandle<ConnectionClosedEvent>
         , IHandle<ActivateDocumentEvent>
+        , IHandle<DatabaseChangedEvent>
     {
         
         [ImportingConstructor]
-        public StatusBarViewModel(IEventAggregator eventAggregator)
+        public StatusBarViewModel(IEventAggregator eventAggregator, IGlobalOptions options)
         {
-            eventAggregator.Subscribe(this);
+            _eventAggregator = eventAggregator;
+            _eventAggregator.SubscribeOnUIThread(this);
+            Options = options;
         }
 
         public bool Working { get; set; }
@@ -39,7 +46,8 @@ namespace DaxStudio.UI.ViewModels
             set
             {
                 _serverName = value;
-                NotifyOfPropertyChange(()=>ServerName); 
+                NotifyOfPropertyChange(()=>ServerName);
+                NotifyOfPropertyChange(() => CanCopyServerNameToClipboard);
             } }
 
         private string _serverVersion = "";
@@ -53,18 +61,17 @@ namespace DaxStudio.UI.ViewModels
             }
         }
 
-
         private string _spid = "";
         
         public string Spid 
         { 
-            get { return _spid == ""?"-":_spid; } 
+            get { return (_spid == "" || _spid== "0" )?"-":_spid; } 
             set { _spid = value;
-                  NotifyOfPropertyChange(()=>Spid);
+                  NotifyOfPropertyChange();
                 }
         }
 
-        private string _timerText = "";
+        private string _timerText = "00:00.0";
         public string TimerText { get { return _timerText; }
             set
             {
@@ -75,13 +82,14 @@ namespace DaxStudio.UI.ViewModels
         
         public string PositionText { get; set; }
 
-        public void Handle(EditorPositionChangedMessage message)
+        public Task HandleAsync(EditorPositionChangedMessage message, CancellationToken cancellationToken)
         {
             PositionText = string.Format("Ln {0}, Col {1} ", message.Line, message.Column);
             NotifyOfPropertyChange(()=>PositionText);
+            return Task.CompletedTask;
         }
 
-        public void Handle(DocumentConnectionUpdateEvent message)
+        public Task HandleAsync(DocumentConnectionUpdateEvent message, CancellationToken cancellationToken)
         {
             
             if (message != null)
@@ -89,7 +97,7 @@ namespace DaxStudio.UI.ViewModels
                 if (message.Connection != null)
                 {
                     ServerName = message.Connection.IsPowerPivot?"<Power Pivot>": message.Connection.ServerName;
-                    Spid = message.Connection.Spid.ToString(CultureInfo.InvariantCulture);
+                    Spid = message.Connection.SPID.ToString(CultureInfo.InvariantCulture);
                 }
                 else
                 {
@@ -98,9 +106,12 @@ namespace DaxStudio.UI.ViewModels
                     Spid = "";
                 }
             }
+            return Task.CompletedTask;
         }
 
-        private int _rowCount = -1;
+        private int _rowCount = 0;
+        private IEventAggregator _eventAggregator;
+
         public int RowCount
         {
             get { return _rowCount; }
@@ -114,15 +125,16 @@ namespace DaxStudio.UI.ViewModels
         {
             get { 
                 if (RowCount >= 0) { 
-                    return string.Format("{0} row{1}", RowCount, RowCount!=1?"s":""); } 
+                    return string.Format("{0:n0} row{1}", RowCount, RowCount!=1?"s":""); } 
                 else { 
                     return ""; 
                 } 
             }
         }
-        public void Handle(ActivateDocumentEvent message)
+        public Task HandleAsync(ActivateDocumentEvent message,CancellationToken cancellationToken)
         {
-            if (message.Document == null ) return;
+            Log.Verbose(Common.Constants.LogMessageTemplate, nameof(StatusBarViewModel), "HandleAsync<ActivateDocumentMessage>", "Starting");
+            if (message.Document == null ) return Task.CompletedTask;
             // remove handler for previous active document
             if (ActiveDocument != null)
             {
@@ -132,8 +144,8 @@ namespace DaxStudio.UI.ViewModels
             ActiveDocument = message.Document;
             // add property changed handler for new document
             ActiveDocument.PropertyChanged += ActiveDocument_PropertyChanged;
-            TimerText = message.Document.ElapsedQueryTime;
-            NotifyOfPropertyChange(() => TimerText);
+            //TimerText = message.Document.ElapsedQueryTime;
+            //NotifyOfPropertyChange(() => TimerText);
             NotifyOfPropertyChange(() => ActiveDocument);
             Spid = ActiveDocument.Spid.ToString() ;
             ServerName = ActiveDocument.ServerName;
@@ -141,6 +153,8 @@ namespace DaxStudio.UI.ViewModels
             TimerText = ActiveDocument.ElapsedQueryTime;
             Message = ActiveDocument.StatusBarMessage;
             RowCount = ActiveDocument.RowCount;
+            Log.Verbose(Common.Constants.LogMessageTemplate, nameof(StatusBarViewModel), "HandleAsync<ActivateDocumentMessage>", "Finished");
+            return Task.CompletedTask;
         }
 
         void ActiveDocument_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -151,30 +165,67 @@ namespace DaxStudio.UI.ViewModels
                     Message = ActiveDocument.StatusBarMessage;
                     break;
                 case "Spid":
-                    NotifyOfPropertyChange(() => Spid);
+                    Spid = ActiveDocument.Spid.ToString();
                     break;
                 case "ServerName":
-                    NotifyOfPropertyChange(() => ServerName);
+                    ServerName = ActiveDocument.ServerName;
                     break;
                 case "ServerVersion":
-                    NotifyOfPropertyChange(() => ServerVersion);
+                    ServerVersion = ActiveDocument.ServerVersion;
                     break;
                 case "ElapsedQueryTime":
                     TimerText = ActiveDocument.ElapsedQueryTime;
                     break;
                 case "RowCount":
                     RowCount = ActiveDocument.RowCount;
-                    //NotifyOfPropertyChange(()=>Rows);
                     break;
             }
         }
 
-        public DocumentViewModel ActiveDocument { get; set; }
+        public bool CanCopyServerNameToClipboard { get => !string.IsNullOrWhiteSpace(_serverName);}
+        public void CopyServerNameToClipboard()
+        {
+            try
+            {
+                ClipboardManager.SetText(ServerName);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Information, $"Copied Server Name: \"{ServerName}\" to clipboard"));
+            }
+            catch(Exception ex)
+            {
+                Log.Error(ex, "{class} {method} {message}", "StatusBarViewModel", "CopyServerNameToClipboard", "Error copying server name to clipboard:\n" + ex.Message);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error copying server name to clipboard:\n{ex.Message}"));
+            }
+        }
 
-        public void Handle(ConnectionClosedEvent message)
+        private DocumentViewModel _activeDocument;
+        public DocumentViewModel ActiveDocument { get => _activeDocument;
+            set {
+                _activeDocument = value;
+                NotifyOfPropertyChange();
+                NotifyOfPropertyChange(nameof(Spid));
+            } 
+        }
+        public IGlobalOptions Options { get; }
+
+        public Task HandleAsync(ConnectionClosedEvent message, CancellationToken cancellationToken)
         {
             ServerName = string.Empty;
+            return Task.CompletedTask;
         }
-        
+
+        public Task HandleAsync(DatabaseChangedEvent message, CancellationToken cancellationToken)
+        {
+            if (ActiveDocument == null) return Task.CompletedTask;
+            try
+            {
+                Spid = ActiveDocument.Spid.ToString();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(StatusBarViewModel), "HandleAsync<DatabaseChangedEvent>", "Error setting Spid");
+                Spid = "0";
+            }
+            return Task.CompletedTask;
+        }
     }
 }

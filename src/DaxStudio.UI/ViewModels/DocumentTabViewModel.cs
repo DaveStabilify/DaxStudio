@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.ComponentModel.Composition;
-using Xceed.Wpf.AvalonDock;
+using AvalonDock;
 using Caliburn.Micro;
+using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
 using Microsoft.Win32;
 using Serilog;
@@ -13,136 +14,257 @@ using DaxStudio.UI.Model;
 using DaxStudio.UI.Extensions;
 using System.Windows;
 using System.Linq;
+using DaxStudio.Interfaces;
+using DaxStudio.Common;
 using System.Threading;
+using System.Threading.Tasks;
+using AvalonDock.Controls;
+using System.Text.RegularExpressions;
+using DaxStudio.Core.Model;
 
 namespace DaxStudio.UI.ViewModels
 {
-    /*
-    public class DocumentFactory
-{
-   [Export(typeof(Func<DocumentViewModel>))]
-   public DocumentViewModel CreateDocument()
-   {
-       return new DocumentViewModel();
-   }
-}
-    */
 
     [Export(typeof(IConductor))]
     public class DocumentTabViewModel : Conductor<IScreen>.Collection.OneActive
         , IHandle<AutoSaveRecoveryEvent>
         , IHandle<NewDocumentEvent>
         , IHandle<OpenFileEvent>
-        , IHandle<OpenRecentFileEvent>
+        , IHandle<OpenDaxFileEvent>
+        , IHandle<PasteDaxFileEvent>
         , IHandle<RecoverNextAutoSaveFileEvent>
+        , IHandle<ShellInitializedEvent>
         , IHandle<UpdateGlobalOptions>
         , IDocumentWorkspace
     {
         private readonly IWindowManager _windowManager;
         private readonly IEventAggregator _eventAggregator;
         private int _documentCount = 1;
-        private DocumentViewModel _activeDocument;
         private Dictionary<int,AutoSaveIndex> _autoSaveRecoveryIndex;
+        private readonly IGlobalOptions _options;
+        private readonly object _activeDocumentLock = new object();
+        private readonly IDaxStudioHost _host;
+        private readonly RibbonViewModel Ribbon;
+        private readonly Application _app;
+        private static Regex generatedNameRegEx = new Regex(@"(?<=Query)(\d+)(?=\.)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         //private readonly Func<DocumentViewModel> _documentFactory;
         private readonly Func<IWindowManager, IEventAggregator, DocumentViewModel> _documentFactory;
         [ImportingConstructor]
-        public DocumentTabViewModel(IWindowManager windowManager, IEventAggregator eventAggregator, Func<IWindowManager,IEventAggregator, DocumentViewModel> documentFactory )
+        public DocumentTabViewModel(IWindowManager windowManager
+            , IEventAggregator eventAggregator
+            , Func<IWindowManager,IEventAggregator, DocumentViewModel> documentFactory
+            , RibbonViewModel ribbonViewModel
+            , IDaxStudioHost host
+            , IGlobalOptions options
+            , IAutoSaver autoSaver)
         {
             _documentFactory = documentFactory;
             _windowManager = windowManager;
             _eventAggregator = eventAggregator;
-            _eventAggregator.Subscribe(this);
+            _options = options;
+            _eventAggregator.SubscribeOnUIThread(this);
+            AutoSaver = autoSaver;
+            Ribbon = ribbonViewModel;
+            _host = host;
+            _app = Application.Current;
         }
 
         
-        public DocumentViewModel ActiveDocument
+        protected override async Task OnInitializedAsync(CancellationToken cancellationToken)
         {
-            get { return _activeDocument; }
-            set
+            await base.OnInitializedAsync(cancellationToken);
+            // The initial recovery / blank-document / command-line-file workflow used
+            // to run here, but Caliburn calls OnInitializedAsync BEFORE the shell's
+            // view has loaded, so dialogs would render before the main UI and any
+            // activated document's view would never be attached to the visual tree.
+            // It now runs in HandleAsync(ShellInitializedEvent) which is published
+            // from ShellViewModel.OnViewLoaded once the window is fully wired up.
+        }
+
+        public async Task HandleAsync(ShellInitializedEvent message, CancellationToken cancellationToken)
+        {
+            try
             {
-                if (_activeDocument == value) 
-                    return;  // this item is already active
-                if (this.Items.Count == 0)
+                var recoveringFiles = false;
+
+                // get master auto save indexes and only get crashed index files...
+                var autoSaveInfo = AutoSaver.LoadAutoSaveMasterIndex();
+                var filesToRecover = autoSaveInfo.Values.Where(idx => idx.IsCurrentVersion && idx.ShouldRecover).SelectMany(entry => entry.Files);
+
+                // check for auto-saved files and offer to recover them
+                if (filesToRecover.Any())
                 {
-                    _activeDocument = null;
-                    return;  // no items in collection usually means we are shutting down
+                    Log.Debug(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(HandleAsync), "Found auto-save files, beginning recovery");
+                    recoveringFiles = true;
+                    await RecoverAutoSavedFilesAsync(autoSaveInfo);
                 }
-                Log.Debug("{Class} {Event} {Connection} {Document}", "DocumentTabViewModel", "ActiveDocument:Set", value.DisplayName);
-                _activeDocument = value;
-                this.ActivateItem(_activeDocument);
-                NotifyOfPropertyChange(()=>ActiveDocument);
+                else
+                {
+                    // if there are no auto-save files to recover, start the auto save timer
+                    Log.Debug(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(HandleAsync), "Starting auto-save timer");
+                    await _eventAggregator.PublishAsync(new StartAutoSaveTimerEvent(), cancellationToken);
+                }
+
+                // if a filename was passed in on the command line open it
+                if (!string.IsNullOrEmpty(_host.CommandLineFileName))
+                {
+                    Log.Debug(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(HandleAsync), $"Opening file from command line: '{_host.CommandLineFileName}'");
+                    await NewQueryDocumentAsync(_host.CommandLineFileName);
+                }
+
+                // if no tabs are open at this point and we are not recovering auto-save file then, open a blank document
+                if (Items.Count == 0 && !recoveringFiles)
+                {
+                    Log.Debug(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(HandleAsync), "Opening a new blank query window");
+                    await _eventAggregator.PublishAsync(new NewDocumentEvent(Ribbon.SelectedTarget), cancellationToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(HandleAsync), "Error during shell-initialized startup workflow");
             }
         }
 
-        
-        //public void NewQueryDocument()
-        //{
-        //    NewQueryDocument(string.Empty, string.Empty);
-        //}
-
-        public void NewQueryDocument(string fileName)
+        private async Task RecoverAutoSavedFilesAsync(Dictionary<int, AutoSaveIndex> autoSaveInfo)
         {
-            NewQueryDocument(fileName, null);
+            Log.Information("{class} {method} {message}", nameof(DocumentTabViewModel), nameof(RecoverAutoSavedFilesAsync), $"Found {autoSaveInfo.Values.Count} auto save index files");
+            // show recovery dialog
+            await _eventAggregator.PublishAsync(new AutoSaveRecoveryEvent(autoSaveInfo));
+
         }
 
-        public void NewQueryDocument( string fileName, DocumentViewModel sourceDocument)
+        public DocumentViewModel ActiveDocument => this.ActiveItem as DocumentViewModel;
+
+        protected override async Task ChangeActiveItemAsync(IScreen newItem, bool closePrevious, CancellationToken cancellationToken)
         {
-            // 1 Open BlankDocument
-            if (string.IsNullOrEmpty(fileName)) OpenNewBlankDocument(sourceDocument);
-            // 2 Open Document in current window (if it's an empty document)
-            else if (ActiveDocument != null && !ActiveDocument.IsDiskFileName && !ActiveDocument.IsDirty) OpenFileInActiveDocument(fileName);
-            // 3 Open Document in a new window if current window has content
-            else OpenFileInNewWindow(fileName);           
+            try
+            {
+                Log.Verbose(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(ChangeActiveItemAsync), "Starting setting ActiveDocument");
+                //ActiveDocument = newItem as DocumentViewModel;
+                var docs = GetChildren();
+                if (!docs.Any() && newItem is DocumentViewModel doc && doc.IsClosing ) { return; }
+                docs.Apply(i => ((DocumentViewModel)i).IsFocused = false);
+                await _eventAggregator.PublishAsync(new SetFocusEvent());
+
+                Log.Verbose(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(ChangeActiveItemAsync), "Finished setting ActiveDocument");
+                await base.ChangeActiveItemAsync(newItem, closePrevious, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(ChangeActiveItemAsync), "Error Changing Active Item");
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error Setting Active Document\n{ex.Message}"));
+                
+            }
             
         }
 
-        private void RecoverAutoSaveFile(AutoSaveIndexEntry file)
+        public AvalonDock.Themes.Theme AvalonDockTheme => new AvalonDock.Themes.GenericTheme();
+        //if (_options.Theme == "Dark") return new Theme.MonotoneTheme();
+        //else return new Theme.DaxStudioLightTheme();
+
+        public IAutoSaver AutoSaver { get; }
+
+        public async Task PasteQueryDocumentAsync(string fileName )
         {
-            
+            await PasteQueryDocumentAsync(fileName, null);
+        }
+
+        public async Task PasteQueryDocumentAsync(string fileName, DocumentViewModel sourceDocument)
+        {
+            try
+            {
+                // 1 Open BlankDocument
+                if (string.IsNullOrEmpty(fileName)) await OpenNewBlankDocumentAsync(sourceDocument);
+                // 2 Open Document in current window even if it's not empty!
+                else if (ActiveDocument != null) OpenFileInActiveDocument(fileName);
+                // 3 Open Document in a new window if there is no current window
+                else await OpenFileInNewWindowAsync(fileName);
+            }
+            catch (Exception ex)
+            {
+                var msg = $"Error pasting DAX file in current document: {ex.Message}";
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(PasteQueryDocumentAsync), msg);
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, msg));
+            }
+        }
+
+        public async Task NewQueryDocumentAsync(string fileName)
+        {
+            await NewQueryDocumentAsync(fileName, null);
+        }
+
+        public async Task NewQueryDocumentAsync( string fileName, DocumentViewModel sourceDocument, bool copyContent = false)
+        {
+            try
+            {
+                // 1 Open BlankDocument
+                if (string.IsNullOrEmpty(fileName)) await OpenNewBlankDocumentAsync(sourceDocument, copyContent);
+                // 2 Open Document in current window (if it's an empty document)
+                else if (ActiveDocument != null && !ActiveDocument.IsDiskFileName && !ActiveDocument.IsDirty) OpenFileInActiveDocument(fileName);
+                // 3 Open Document in a new window if current window has content
+                else await OpenFileInNewWindowAsync(fileName);
+
+                if (!string.IsNullOrEmpty(fileName)) JumpListHelper.AddToRecentFilesList(fileName);
+            }
+            catch (Exception ex)
+            {
+                var msg = $"Error creating new document: {ex.Message}";
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(NewQueryDocumentAsync), msg);
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, msg));
+            }
+        }
+
+        private async Task RecoverAutoSaveFileAsync(AutoSaveIndexEntry file)
+        {
+            Log.Debug("{class} {method} {message}", "DocumentTabViewModel", "RecoverAutoSaveFile", $"Starting AutoSave Recovery for {file.DisplayName} ({file.AutoSaveId})");
             var newDoc = _documentFactory(_windowManager, _eventAggregator);
             using (new StatusBarMessage(newDoc, $"Recovering \"{file.DisplayName}\""))
             {
-                newDoc.DisplayName = file.DisplayName;
-                newDoc.IsDiskFileName = file.IsDiskFileName;
-                newDoc.FileName = file.OriginalFileName;
-                newDoc.AutoSaveId = file.AutoSaveId;
-                newDoc.State = DocumentState.RecoveryPending;
+                try
+                {
+                    newDoc.DisplayName = file.DisplayName;
+                    newDoc.IsDiskFileName = file.IsDiskFileName;
+                    newDoc.FileName = file.OriginalFileName;
+                    newDoc.AutoSaveId = file.AutoSaveId;
+                    newDoc.State = DocumentState.RecoveryPending;
+                    await DeactivateItemAsync(ActiveItem,false);
+                    await ActivateItemAsync(newDoc);
+                    //ActiveDocument = newDoc;
+                    newDoc.IsDirty = true;
 
-                Items.Add(newDoc);
-                ActivateItem(newDoc);
-                ActiveDocument = newDoc;
-                newDoc.IsDirty = true;
+                    file.ShouldOpen = false;
 
-                file.ShouldOpen = false;
-                //_eventAggregator.PublishOnUIThreadAsync(message);
+                    await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Information, $"Recovering File: '{file.DisplayName}'"));
 
-                //return newDoc;
-
-                // hack - need to wait for the document to load properly
-                // otherwise the view model only appears to be semi-loaded
-                // and we get errors when the auto save timer kicks in 
-                //while (newDoc.State != DocumentState.Loaded)
-                //{
-                //    Thread.Sleep(100);
-                //    Log.Verbose("{class} {method} {message}", "DocumentTabViewModel", "RecoverAutoSaveFile", "Waiting for document to reach the loaded state");
-                //}
-                Log.Information("{class} {method} {message}", "DocumentTabViewModel", "RecoverAutoSaveFile", $"AutoSave Recovery complete for {file.DisplayName} ({file.AutoSaveId})");
+                    Log.Debug("{class} {method} {message}", "DocumentTabViewModel", "RecoverAutoSaveFile", $"Finished AutoSave Recovery for {file.DisplayName} ({file.AutoSaveId})");
+                }
+                catch (Exception ex)
+                {
+                    await _eventAggregator.PublishAsync( new  OutputMessage( MessageType.Error, $"Error recovering: '{file.OriginalFileName}({file.AutoSaveId})'\n{ex.Message}"));
+                    Log.Error(ex, Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(RecoverAutoSaveFileAsync), $"Error recovering: '{file.OriginalFileName}({file.AutoSaveId})'\n{ex.Message}");
+                }
             }
         }
 
-        private void OpenFileInNewWindow(string fileName)
+        private async Task OpenFileInNewWindowAsync(string fileName)
         {
             Log.Debug("{class} {method} {message}", "DocumentTabViewModel", "OpenFileInNewWindow", "Opening " + fileName);
-            var newDoc = _documentFactory(_windowManager, _eventAggregator);
-            Items.Add(newDoc);
-            ActivateItem(newDoc);
-            ActiveDocument = newDoc;
-                       
-            newDoc.DisplayName = "Opening...";
-            newDoc.FileName = fileName;
-            newDoc.State = DocumentState.LoadPending;  // this triggers the DocumentViewModel to open the file
-            
+            try
+            {
+                var newDoc = _documentFactory(_windowManager, _eventAggregator);
+                newDoc.DisplayName = "Opening...";
+                newDoc.FileName = fileName;
+                newDoc.State = DocumentState.LoadPending;  // this triggers the DocumentViewModel to open the file
+
+                await ActivateItemAsync(newDoc);
+
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "{class} {method} {message}", "DocumentTabViewModel", "OpenFileInNewWindow", ex.Message);
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"The following error occurred while attempting to open '{fileName}': {ex.Message}"));
+            }
         }
 
         private void OpenFileInActiveDocument(string fileName)
@@ -152,25 +274,51 @@ namespace DaxStudio.UI.ViewModels
             ActiveDocument.LoadFile(fileName);
         }
 
-        private void OpenNewBlankDocument(DocumentViewModel sourceDocument)
+        private async Task OpenNewBlankDocumentAsync(DocumentViewModel sourceDocument, bool copyContent = false)
         {
+            try
+            {
+                Log.Debug(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(OpenNewBlankDocumentAsync), "Requesting new document from document factory");
+                var newDoc = _documentFactory(_windowManager, _eventAggregator);
+                _documentCount = GetMaxDocNumber();
+                _documentCount++;
+                newDoc.DisplayName = $"Query{_documentCount}.dax";
+                newDoc.NewDocumentParameters = new NewDocumentParameters
+                {
+                    SourceDocument = sourceDocument,
+                    CopyContent = copyContent
+                };
+                Log.Debug(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(OpenNewBlankDocumentAsync), "Adding new document to tabs collection");
 
-            var newDoc = _documentFactory(_windowManager, _eventAggregator);
-            
-            Items.Add(newDoc);
-            ActivateItem(newDoc);
-            ActiveDocument = newDoc;
-            newDoc.DisplayName = string.Format("Query{0}.dax", _documentCount);
-            _documentCount++;
-            
-            new System.Action(CleanActiveDocument).BeginOnUIThread();
+                await ActivateItemAsync(newDoc);
 
-            if (sourceDocument == null)
-                new System.Action(ChangeConnection).BeginOnUIThread();
-            else {
-                _eventAggregator.PublishOnUIThread(new CopyConnectionEvent(sourceDocument));
             }
-            
+            catch (Exception ex)
+            {
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(OpenNewBlankDocumentAsync), "Error opening new document");
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error opening new document\n{ex.Message}"));
+            }
+
+        }
+
+        private int GetMaxDocNumber()
+        {
+            int maxDocNumber = 0;
+            foreach (DocumentViewModel doc in Items)
+            {
+                if (doc.IsDiskFileName) continue; // if this is previously saved file then skip it
+                var m = generatedNameRegEx.Matches(doc.DisplayName);
+                if (m.Count == 0) continue; // if we did not find any digits after the word query then skip this file
+                var docNum = int.Parse(m[0].Value);
+                if (docNum > maxDocNumber) maxDocNumber = docNum;
+            }
+            return maxDocNumber;
+        }
+
+        private async Task ConnectToServerAsync()
+        {
+            await ActiveDocument?.ConnectToServerAsync();
+
         }
 
         private void CleanActiveDocument()
@@ -179,24 +327,30 @@ namespace DaxStudio.UI.ViewModels
             ActiveDocument.IsDirty = false;
         }
 
-        private void ChangeConnection()
+        private async Task ChangeConnectionAsync()
         {
-            ActiveDocument.ChangeConnection();
+            if (ActiveDocument == null) return;
+            await ActiveDocument?.ChangeConnectionAsync();
         }
 
-        public void Handle(NewDocumentEvent message)
+        public async Task HandleAsync(NewDocumentEvent message, CancellationToken cancellationToken)
         {
-            NewQueryDocument("",message.ActiveDocument);
+            if (ActiveDocument?.IsConnectionDialogOpen??false)
+            {
+                await _eventAggregator.PublishAsync(new RefreshConnectionDialogEvent());
+                return;
+            }
+            await NewQueryDocumentAsync("", message.ActiveDocument, message.CopyContent);
         }
 
-        public void Handle(OpenFileEvent message)
+        public async Task HandleAsync(OpenFileEvent message, CancellationToken cancellationToken)
         {
             // Configure open file dialog box
             var dlg = new OpenFileDialog
             {
                 FileName = "Document",
                 DefaultExt = ".dax",
-                Filter = "DAX documents|*.dax;*.msdax|DAX Studio documents|*.dax|SSMS DAX documents|*.msdax"
+                Filter = "DAX documents|*.dax;*.msdax;*.daxx;*.vpax|DAX Studio documents|*.dax;*.daxx;*.vpax|SSMS DAX documents|*.msdax"
             };
 
             // Show open file dialog box
@@ -207,68 +361,130 @@ namespace DaxStudio.UI.ViewModels
             {
                 // Open document 
                 var fileName = dlg.FileName;
-                _eventAggregator.PublishOnUIThread(new FileOpenedEvent(fileName));
-                NewQueryDocument(fileName);
+                await _eventAggregator.PublishAsync(new FileOpenedEvent(fileName));
+                await NewQueryDocumentAsync(fileName);
             }
             
         }
 
-        public void Handle(OpenRecentFileEvent message)
+        public async Task HandleAsync(OpenDaxFileEvent message, CancellationToken cancellationToken)
         {
-            NewQueryDocument(message.FileName);
+            await NewQueryDocumentAsync(message.FileName);
         }
 
-        public void TabClosing(object sender, DocumentClosingEventArgs args)
+        public async Task HandleAsync(PasteDaxFileEvent message, CancellationToken cancellationToken)
         {
+            await PasteQueryDocumentAsync(message.FileName);
+        }
+        bool _isClosing = false;
+        public async Task TabClosing(object sender, DocumentClosingEventArgs args)
+        {
+            Log.Verbose(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(TabClosing), "Starting");
+            try
+            {
+                if (_isClosing) return; // prevent re-entrancy
+                _isClosing = true;  
 
-            var doc = args.Document.Content as IScreen;
-            if (doc == null) return;
+                var doc = args.Document.Content as IScreen;
+                if (doc == null) return;
 
-            args.Cancel = true; // cancel the default tab close action as we want to call 
+                args.Cancel = true; // cancel the default tab close action as we want to call 
 
-            doc.TryClose();     // TryClose and give the document a chance to block the close
+                await CloseTabAsync(doc);
 
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(TabClosing), "Error while closing a tab");
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error closing document:\n{ex.Message}"));
+            }
+            finally
+            {
+                _isClosing = false;
+                Log.Verbose(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(TabClosing), "Finished");
+            }
+        }
+
+        private async Task CloseTabAsync(IScreen doc)
+        {
+            
+            await doc.TryCloseAsync();     // TryClose and give the document a chance to block the close
+            
             if (this.Items.Count == 0)
             {
                 Log.Debug("{class} {method} {message}", "DocumentTabViewModel", "TabClosing", "All documents closed");
-                ActiveDocument = null;
-                _eventAggregator.PublishOnUIThreadAsync(new AllDocumentsClosedEvent());
+                //ActiveDocument = null;
+                await _eventAggregator.PublishAsync(new AllDocumentsClosedEvent());
+            }
+
+            // remove this document from the autosave index
+            if (!Items.Contains(doc) && doc is DocumentViewModel docModel)
+            {
+                AutoSaver.Remove(docModel);
             }
         }
 
         public void Activate(object document)
         {
-            var doc = document as DocumentViewModel;
-            if (doc != null)
+            Log.Verbose(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(Activate), "Starting");
+            try
             {
-                ActivateItem(doc);
-                ActiveDocument = doc;
+                if (document is DocumentViewModel doc)
+                {
+                    ActivateItemAsync(doc).Wait();
+                    //ActiveDocument = doc;
+                }
             }
+            catch (Exception ex)
+            {
+                Log.Error(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(Activate), $"Error Activating document: {ex.Message}");
+            }
+            Log.Verbose(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(Activate), "Finished");
         }
 
-        public void Handle(UpdateGlobalOptions message)
+        public Task HandleAsync(UpdateGlobalOptions message, CancellationToken cancellationToken)
         {
+            NotifyOfPropertyChange(() => AvalonDockTheme);
             foreach (var itm in this.Items)
             {
-                var doc = itm as DocumentViewModel;
+                if (!(itm is DocumentViewModel doc)) continue;
                 doc.UpdateSettings();
+                doc.UpdateTheme();
             }
+            return Task.CompletedTask;
         }
 
-        public void Handle(AutoSaveRecoveryEvent message)
+        public async Task HandleAsync(AutoSaveRecoveryEvent message, CancellationToken cancellationToken)
         {
             _autoSaveRecoveryIndex = message.AutoSaveMasterIndex;
 
             if (!message.RecoveryInProgress)
             {
+                Log.Information(Constants.LogMessageTemplate, nameof(DocumentViewModel), "Handle<AutoSaveRecoveryEvent>", "Checking if any files need to be recovered from a previous crash");
+                
+                var filesToRecover = message.AutoSaveMasterIndex.Values.Where(i => i.ShouldRecover && i.IsCurrentVersion).SelectMany(entry => entry.Files).ToList();
+
+                if (filesToRecover.Count == 0)
+                {
+                    Log.Information(Constants.LogMessageTemplate, nameof(DocumentViewModel), "Handle<AutoSaveRecoveryEvent>", "no files found that need to be recovered");
+
+                    // if there are no files to recover then clean up 
+                    // the recovery folder and exit here
+                    AutoSaver.CleanUpRecoveredFiles();
+                    //return Task.CompletedTask; 
+                }
+
+                Log.Information(Constants.LogMessageTemplate, nameof(DocumentViewModel), "Handle<AutoSaveRecoveryEvent>", $"found {filesToRecover.Count} file(s) that may need to be recovered, showing recovery dialog");
+
                 // if auto save recovery is not already in progress 
                 // prompt the user for which files should be recovered
-                var autoSaveRecoveryDialog = new AutoSaveRecoveryDialogViewModel();
+                var autoSaveRecoveryDialog = new AutoSaveRecoveryDialogViewModel
+                {
+                    Files = new ObservableCollection<AutoSaveIndexEntry>(filesToRecover)
+                };
 
-                var filesToRecover = message.AutoSaveMasterIndex.Values.Where(i => i.ShouldRecover).SelectMany(entry => entry.Files);
-                autoSaveRecoveryDialog.Files = new ObservableCollection<AutoSaveIndexEntry>(filesToRecover);
 
-                _windowManager.ShowDialogBox(autoSaveRecoveryDialog, settings: new Dictionary<string, object>
+                await _windowManager.ShowDialogBoxAsync(autoSaveRecoveryDialog, settings: new Dictionary<string, object>
                 {
                     { "WindowStyle", WindowStyle.None},
                     { "ShowInTaskbar", false},
@@ -280,20 +496,30 @@ namespace DaxStudio.UI.ViewModels
 
                 if (autoSaveRecoveryDialog.Result != OpenDialogResult.Cancel)
                 {
+                    Log.Information(Constants.LogMessageTemplate, nameof(DocumentViewModel), "Handle<AutoSaveRecoveryEvent>", "Recovery Started - recovering selected files.");
                     message.RecoveryInProgress = true;
 
-                    var fileToOpen = _autoSaveRecoveryIndex.Values.Where(i=>i.ShouldRecover).FirstOrDefault().Files.Where(x => x.ShouldOpen).FirstOrDefault();
+                    var fileToOpen = _autoSaveRecoveryIndex.Values.Where(i=>i.ShouldRecover).SelectMany(index => index.Files).Where(x => x.ShouldOpen).FirstOrDefault();
 
                     if (fileToOpen != null)
                     {
                         // the first file will mark itself as opened then re-publish the message 
                         // to open the next file (if there is one)
-                        RecoverAutoSaveFile(fileToOpen);
+                        await RecoverAutoSaveFileAsync(fileToOpen);
                     }
+                }
+                else
+                {
+                    Log.Information(Constants.LogMessageTemplate, nameof(DocumentViewModel), "Handle<AutoSaveRecoveryEvent>", "Recovery Cancelled - cleaning up unwanted recovery files.");
+                    // if recovery has been cancelled open a new blank document
+                    await NewQueryDocumentAsync("");
+                    // and remove unwanted recovery files
+                    AutoSaver.CleanUpRecoveredFiles();
                 }
 
             }
 
+            //return Task.CompletedTask;
             // TODO - maybe move this to a RecoverNextFile message and store the files to recover in a private var
             //        then at the end of the ViewLoaded event we can trigger this event and run code like the
             //        section below
@@ -301,28 +527,67 @@ namespace DaxStudio.UI.ViewModels
             
         }
 
-        public void Handle(RecoverNextAutoSaveFileEvent message)
+        public async Task HandleAsync(RecoverNextAutoSaveFileEvent message, CancellationToken cancellationToken)
         {
-            
-            var fileToOpen = _autoSaveRecoveryIndex.Values.Where(i=>i.ShouldRecover).FirstOrDefault().Files.Where(x => x.ShouldOpen).FirstOrDefault();
+
+            await RecoverNextAutoSaveFileAsync();
+
+        }
+
+        private async Task RecoverNextAutoSaveFileAsync()
+        {
+            var fileToOpen = _autoSaveRecoveryIndex.Values.Where(i => i.ShouldRecover).SelectMany(index => index.Files).Where(x => x.ShouldOpen).FirstOrDefault();
 
             if (fileToOpen != null)
             {
+                // change the ShouldOpen flag to prevent the file being opened twice
+                fileToOpen.ShouldOpen = false;
                 // the first file will mark itself as opened then re-publish the message 
                 // to open the next file (if there is one)
-                RecoverAutoSaveFile(fileToOpen);
+                await RecoverAutoSaveFileAsync(fileToOpen);
             }
             else
             {
 
                 // if no files have been opened open a new blank document
-                if (Items.Count == 0) OpenNewBlankDocument(null);
+                if (Items.Count == 0) await OpenNewBlankDocumentAsync(null);
 
-                
+                // Only the last tab should be active.
+                // make sure all items except the last tab are not subscribed to the EventAggregator
+                if (Items.Count > 1)
+                {
+                    for (var i = 0 ; i < Items.Count-1;i++)
+                    {
+                        (Items[i] as DocumentViewModel)?.UnsubscribeAll();
+                    }
+                }
+
+                AutoSaver.CleanUpRecoveredFiles();
+
                 // Now that any files have been recovered start the auto save timer
-                _eventAggregator.PublishOnUIThreadAsync(new StartAutoSaveTimerEvent());
-                
+                await _eventAggregator.PublishAsync(new StartAutoSaveTimerEvent());
+
             }
         }
+
+        public async Task DuplicateTab(object tab)
+        {
+            if( tab is LayoutDocumentItem item)
+            {
+                if (item.Model is DocumentViewModel doc)
+                {
+                    await OpenNewBlankDocumentAsync(doc, copyContent: true);
+                }
+            }
+            // todo get tab.Model to get at DocumentViewModel
+            System.Diagnostics.Debug.WriteLine("duplicate tab");
+        }
+
+        protected override void OnActivationProcessed(IScreen item, bool success)
+        {
+            base.OnActivationProcessed(item, success);
+            Log.Debug(Constants.LogMessageTemplate, nameof(DocumentTabViewModel), nameof(OnActivationProcessed), $"Activation processed for {item?.DisplayName??"<null>"} with success: {success}");
+        }
+
     }
 }

@@ -1,5 +1,5 @@
-﻿using System;
-using System.Data;
+﻿using ADOTabular.Interfaces;
+using System;
 
 namespace ADOTabular
 {
@@ -8,7 +8,7 @@ namespace ADOTabular
     {
 
         public ADOTabularMeasure(ADOTabularTable table, string internalReference, string name, string caption, string description,
-                                bool isVisible, string expression)
+                                bool isVisible, string expression, string formatStringExpression)
         {
             Table = table;
             InternalReference = internalReference;
@@ -17,11 +17,12 @@ namespace ADOTabular
             Description = description;
             IsVisible = isVisible;
             Expression = expression;
+            FormatStringExpression = formatStringExpression;
         }
 
         public string InternalReference { get; private set; }
 
-        public ADOTabularColumnType ColumnType { get; internal set; }
+        public ADOTabularObjectType ObjectType { get; internal set; } = ADOTabularObjectType.Measure;
 
         public ADOTabularTable Table { get; private set; }
 
@@ -31,14 +32,23 @@ namespace ADOTabular
 
         public string Contents { get; private set; }
 
-        public string DisplayFolder { get; private set; }
         public virtual string DaxName {
             get
             {
                 // for measures we exclude the table name
-                return ColumnType == ADOTabularColumnType.Column  
-                    ? string.Format("{0}[{1}]", Table.DaxName, Name)
-                    : string.Format("[{0}]",Name);
+                return ObjectType == ADOTabularObjectType.Column  
+                    ? $"{Table.DaxName}[{Name.Replace("]", "]]")}]"
+                    : $"[{Name.Replace("]", "]]")}]";
+            }
+        }
+        public virtual string FormatStringDaxName
+        {
+            get
+            {
+                // for measures we exclude the table name
+                return ObjectType == ADOTabularObjectType.Column
+                    ? $"{Table.DaxName}[_{Name.Replace("]", "]]")} FormatString]"
+                    : $"[_{Name.Replace("]", "]]")} FormatString]";
             }
         }
 
@@ -52,12 +62,10 @@ namespace ADOTabular
 
         public string Expression { get; set; }
 
-        public MetadataImages MetadataImage
-        {
-            get
-            {
-                return MetadataImages.Measure;
-            }
-        }
+        public string FormatStringExpression { get; set; }
+
+        public static MetadataImages MetadataImage => MetadataImages.Measure;
+
+
     }
 }

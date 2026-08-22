@@ -1,73 +1,86 @@
 ﻿using System;
 using Caliburn.Micro;
-using System.Collections.Specialized;
 using System.Collections.Generic;
-using System.Reflection;
-using DaxStudio.UI.Events;
 using DaxStudio.Interfaces;
 using System.ComponentModel.Composition;
-using System.Threading.Tasks;
-using System.Windows;
-using System.Diagnostics;
 using DaxStudio.Common;
+using DaxStudio.UI.Interfaces;
+using DaxStudio.UI.Extensions;
+using Humanizer;
+using System.Reflection;
+using System.Linq;
+using Serilog;
 
 namespace DaxStudio.UI.ViewModels
 {
     [Export]
-    public class HelpAboutViewModel : Screen
+    public class HelpAboutViewModel : BaseDialogViewModel
     {
-        private IEventAggregator _eventAggregator;
-        private IDaxStudioHost _host;
+        private readonly IEventAggregator _eventAggregator;
+        private readonly IDaxStudioHost _host;
+
+        public IGlobalOptions Options { get; }
 
         [ImportingConstructor]
-        public HelpAboutViewModel(IEventAggregator eventAggregator, IVersionCheck checker, IDaxStudioHost host) {
+        public HelpAboutViewModel(IEventAggregator eventAggregator, IVersionCheck checker, IDaxStudioHost host, IGlobalOptions options) {
             _eventAggregator = eventAggregator;
             _host = host;
+            Options = options;
             DisplayName = "About DaxStudio";
             CheckingUpdateStatus = true;
-            UpdateStatus = "Checking for Updates...";
+          
             NotifyOfPropertyChange(() => UpdateStatus);
 
             // start version check async
             VersionChecker = checker;
-            VersionChecker.PropertyChanged += VersionChecker_PropertyChanged;
-            Task.Run(() => 
-                {
-                    this.VersionChecker.Update(); 
-                })
-                .ContinueWith((previous)=> {
-                    // todo - should we be checking for exceptions in this continuation
-                    CheckingUpdateStatus = false;
-                    UpdateStatus = VersionChecker.VersionStatus;
-                    VersionIsLatest = VersionChecker.VersionIsLatest;
-                    DownloadUrl = VersionChecker.DownloadUrl;
-                    NotifyOfPropertyChange(() => VersionIsLatest);
-                    NotifyOfPropertyChange(() => DownloadUrl);
-                    NotifyOfPropertyChange(() => UpdateStatus);
-                    NotifyOfPropertyChange(() => CheckingUpdateStatus);
-                },TaskScheduler.Default);
-        }
+            VersionChecker.UpdateStartingCallback += this.VersionUpdateStarting;
+            VersionChecker.UpdateCompleteCallback += this.VersionUpdateComplete;
+            checker.CheckVersion();
 
-        void VersionChecker_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
-        {
-            if (e.PropertyName == "VersionStatus")
+            System.Reflection.Assembly assembly = System.Reflection.Assembly.GetEntryAssembly();
+            Version version = assembly?.GetName().Version;
+
+            BuildNumber = version?.ToString();
+            FullVersionNumber = version?.ToString(3);
+
+            try
             {
-                NotifyOfPropertyChange(() => UpdateStatus);
+                var dateStr = GetResourceFromAssembly(assembly, "BuildDate.txt").Normalize();
+                BuildDate = DateTime.Parse(dateStr, null, System.Globalization.DateTimeStyles.RoundtripKind).ToString(Constants.BuildDateFormat);
+
             }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(HelpAboutViewModel), "ctor", "Error reading Build Date from .exe resource");
+                BuildDate = "<n/a>";
+            }
+
         }
 
-        public string FullVersionNumber
+        public void VersionUpdateStarting(object sender, EventArgs e)
         {
-            get { return System.Reflection.Assembly.GetEntryAssembly().GetName().Version.ToString(3); }
+            IsCheckRunning = true;
         }
 
-        public string BuildNumber
+        public void VersionUpdateComplete(object sender, EventArgs e)
         {
-            get { return System.Reflection.Assembly.GetEntryAssembly().GetName().Version.ToString(); }
+            IsCheckRunning = false;
+
+            NotifyOfPropertyChange(() => UpdateStatus);
+            NotifyOfPropertyChange(() => LastChecked);
+            VersionIsLatest = VersionChecker.VersionIsLatest;
+            NotifyOfPropertyChange(() => VersionIsLatest);
+            NotifyOfPropertyChange(() => DownloadUrl);
         }
 
-        //[Import(typeof(IVersionCheck))]
-        public IVersionCheck VersionChecker { get; set; }
+
+        public string FullVersionNumber { get; }
+        
+        public string BuildNumber { get; }
+        
+        public string BuildDate { get; }
+
+        public IVersionCheck VersionChecker { get; }
 
         public SortedList<string,string> ReferencedAssemblies
         {
@@ -85,9 +98,9 @@ namespace DaxStudio.UI.ViewModels
                 return l; 
             }
         }
-        public void Ok()
+        public async void Ok()
         {
-            TryClose();
+            await TryCloseAsync();
         }
 
         public bool CheckingUpdateStatus
@@ -96,27 +109,77 @@ namespace DaxStudio.UI.ViewModels
             set;
         }
 
+        private bool _isCheckRunning;
+        public bool IsCheckRunning { get => _isCheckRunning;
+            set {
+                _isCheckRunning = value;
+                NotifyOfPropertyChange(() => IsCheckRunning);
+            } 
+        }
+
         public string UpdateStatus
         {
-            get;
-            set;
+            get
+            {
+                if (IsCheckRunning)
+                {
+                    return "Checking for updates...";
+                }
+
+                if (VersionChecker.ServerVersion.IsNotSet() || Options.BlockVersionChecks) return "(Unable to get version information from daxstudio.org)"; 
+
+                var versionComparison = VersionChecker.LocalVersion.CompareTo(VersionChecker.ServerVersion);
+                if (versionComparison > 0)  return $"a preview release"; 
+                if (versionComparison == 0) return "up to date"; 
+
+                // A newer version is available - call out when it is a preview / pre-release build so the
+                // user knows the update they are being offered is not a production release.
+                return VersionChecker.IsServerVersionPreview
+                    ? $"out dated - preview version {VersionChecker.ServerVersion.ToString(3)} is available"
+                    : $"out dated - version {VersionChecker.ServerVersion.ToString(3)} is available";
+
+            }
+
         }
-        public string DownloadUrl { get; private set; }
+
+        public string LastChecked
+        {
+            get
+            {
+                if (Options.BlockVersionChecks)
+                    return "Version checks blocked in options";
+                return $"Last checked {Options.LastVersionCheckUTC.ToUniversalTime().Humanize()}";
+            }
+        }
+
+        public Uri DownloadUrl => VersionChecker.DownloadUrl;
         public bool VersionIsLatest { get; private set; }
 
         public bool IsLoggingEnabled { get { return _host.DebugLogging; } }
 
-        public void OpenLogFolder()
+        public string LogFolder { get { return @"file:///" + ApplicationPaths.LogPath; } }
+
+
+        private string GetResourceFromAssembly(Assembly assembly, string resourceName)
         {
-            Process.Start(Constants.LogFolder);
+            if (assembly == null) return DateTime.UtcNow.ToString("o");
+
+            var names = assembly.GetManifestResourceNames();
+            var name = names.FirstOrDefault(n => n.EndsWith(resourceName));
+            using (var stream = assembly.GetManifestResourceStream(name))
+            {
+                if (stream == null) return null;
+                byte[] buffer = new byte[stream.Length];
+                stream.Read(buffer, 0, buffer.Length);
+                var str = System.Text.Encoding.UTF8.GetString(buffer, 0, buffer.Length);
+                return str;
+            }
         }
 
-        public string LogFolder { get { return @"file:///" + Environment.ExpandEnvironmentVariables(Constants.LogFolder); } }
+        public override void Close()
+        {
+            TryCloseAsync();
+        }
     }
 
-    public class ReferencedAssembly
-    {
-        public string Name { get; set; }
-        public string Version { get; set; }
-    }
 }

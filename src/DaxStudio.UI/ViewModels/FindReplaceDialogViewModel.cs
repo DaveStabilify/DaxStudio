@@ -1,15 +1,20 @@
-﻿using Caliburn.Micro;
+using Caliburn.Micro;
 using ICSharpCode.AvalonEdit.Document;
-using DAXEditor;
+using DAXEditorControl;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Media;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
-using DaxStudio.UI.Views;
 using DaxStudio.UI.Extensions;
+using Serilog;
+using DaxStudio.Core.Events;
+using DaxStudio.UI.Events;
+using DaxStudio.Common;
+using System.Threading.Tasks;
+using System.Threading;
+
+
 
 namespace DaxStudio.UI.ViewModels
 {
@@ -19,39 +24,42 @@ namespace DaxStudio.UI.ViewModels
         Prev
     }
         
-    public class FindReplaceDialogViewModel : Screen
+    public class FindReplaceDialogViewModel : BaseDialogViewModel, IViewAware
     {
 
-        // TODO - fix the following sample code to fit MVVM
 
         private static string _textToFind = "";
         private static string _textToReplace = "";
-        private static bool _caseSensitive = false;
-        private static bool _useRegex = false;
-        private static bool _useWildcards = false;
-        private static bool _searchUp = false;
+        private static bool _caseSensitive;
+        private static bool _useRegex;
+        private static bool _useWildcards;
+        private static bool _searchUp;
         private static bool _useWholeWord;
-        private IEditor editor;
+        private readonly IEventAggregator _eventAggregator;
 
-        public FindReplaceDialogViewModel()
-        {            
-            //this.editor = editor;
-            //_searchDirections = new List<string>();
-            //_searchDirections.Add("Next");
-            //_searchDirections.Add("Prev");
+        public FindReplaceDialogViewModel(IEventAggregator eventAggregator)
+        {
+            _eventAggregator = eventAggregator;
+            IsVisible = false;
         }
 
-#region Properties
-        //private List<string> _searchDirections;
+        protected override async Task OnActivatedAsync(CancellationToken cancellationToken)
+        {
+            await Task.Delay(100); // let the screen draw for the first time before we try and set the focus
+            this.SetFocus(() => TextToFind);
+        }
+        
+        #region Properties
+
         public IEnumerable<SearchDirection> SearchDirections
         {
             get
             {
                 return Enum.GetValues(typeof(SearchDirection))
-                    .Cast<SearchDirection>(); ;
+                    .Cast<SearchDirection>(); 
             }
         }
-        public IEditor Editor { get { return editor; } set { editor = value; } }
+        public IEditor Editor { get; set; }
 
         // TODO add tab index
         public bool SearchUp
@@ -65,7 +73,7 @@ namespace DaxStudio.UI.ViewModels
 
         public bool UseWildcards
         {
-            get { return _useWildcards; }
+            get => _useWildcards;
             set
             {
                 _useWildcards = value;
@@ -75,18 +83,24 @@ namespace DaxStudio.UI.ViewModels
 
         public string TextToFind
         {
-            get { return _textToFind; }
+            get => _textToFind;
             set
             {
                 _textToFind = value;
                 NotifyOfPropertyChange(() => TextToFind);
                 NotifyOfPropertyChange(() => CanFind);
+                if (!UseRegex)
+                {
+                    // don't try to search as the user typing if we are using regex
+                    // as the pattern may not be valid yet
+                    FindNext(false); 
+                }
             }
         }
 
         public string TextToReplace
         {
-            get { return _textToReplace; }
+            get => _textToReplace;
             set
             {
                 _textToReplace = value;
@@ -96,7 +110,7 @@ namespace DaxStudio.UI.ViewModels
             }
         }
 
-        public bool CaseSensitive { get {return _caseSensitive;}
+        public bool CaseSensitive { get => _caseSensitive;
             set
             {
                 _caseSensitive = value;
@@ -104,13 +118,13 @@ namespace DaxStudio.UI.ViewModels
             }
         }
 
-        public bool UseRegex { get {return _useRegex;}
+        public bool UseRegex { get => _useRegex;
             set { _useRegex = value;
             NotifyOfPropertyChange(() => UseRegex);
             }
         }
 
-        public bool UseWholeWord { get {return _useWholeWord;}
+        public bool UseWholeWord { get => _useWholeWord;
             set
             {
                 _useWholeWord = value;
@@ -118,37 +132,36 @@ namespace DaxStudio.UI.ViewModels
             } 
         }
 
-        public bool CanFind { get { return !string.IsNullOrEmpty(TextToFind); } }
-        public bool CanReplace { get { return !string.IsNullOrEmpty(TextToReplace); } }
-        public bool CanReplaceAll { get { return !string.IsNullOrEmpty(TextToReplace); } }
+        public bool CanFind => !string.IsNullOrEmpty(TextToFind);
+        public bool CanReplace => !string.IsNullOrEmpty(TextToReplace);
+        public bool CanReplaceAll => !string.IsNullOrEmpty(TextToReplace);
 
         private bool _isVisible;
         public bool IsVisible
         {
-            get { return _isVisible; }
+            get => _isVisible;
             set {
-                _isVisible = value;
-                NotifyOfPropertyChange(() => IsVisible);
-                if (value == true)
+                try
                 {
-                    //FocusOnFindBox();
-                    this.SetFocus(() => TextToFind);
+                    _isVisible = value;
+                    NotifyOfPropertyChange(() => IsVisible);
+                    SelectionActive = false;
+                }
+                catch(Exception ex)
+                {
+                    Log.Error(ex, Constants.LogMessageTemplate, nameof(FindReplaceDialogViewModel), nameof(IsVisible), $"Error setting IsVisible: {ex.Message}");
                 }
             }
         }
 
-        //private void FocusOnFindBox()
-        //{
-        //    var v = (FindReplaceDialogView)this.GetView();
-        //    v.FocusOnFind();
-        //}
+        private bool _showReplace;      
 
-        private bool _showReplace;
         public bool ShowReplace
         {
-            get { return _showReplace; }
+            get => _showReplace;
             set { _showReplace = value;
-                NotifyOfPropertyChange(() => ShowReplace);
+                NotifyOfPropertyChange(nameof(ShowReplace));
+                NotifyOfPropertyChange(nameof(TextToReplace));
             }
         }
         public void ToggleReplace()
@@ -158,24 +171,35 @@ namespace DaxStudio.UI.ViewModels
 
 #endregion
 
-
 #region Methods
         
-        public void FindText()
+        public void FindText(bool moveSelection = true)
         {
-            if (editor == null || string.IsNullOrEmpty( TextToFind))
+            try
             {
-                SystemSounds.Beep.Play();
-                return;
+                if (Editor == null || string.IsNullOrEmpty(TextToFind))
+                {
+                    SystemSounds.Beep.Play();
+                    return;
+                }
+                if (!FindNextInternal(moveSelection))
+                    SystemSounds.Beep.Play();
             }
-            if (!FindNextInternal())
-                SystemSounds.Beep.Play();
+            catch (Exception ex)
+            {
+                Log.Error(ex, Constants.LogMessageTemplate, "FindReplaceDialogViewModel", "FindText", ex.Message);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error trying to find text: ${ex.Message}"));
+            }
         }
 
         public void FindNext()
         {
+            FindNext(true);
+        }
+        public void FindNext(bool moveSelection = true)
+        {
             SearchUp = false;
-            FindText();
+            FindText(moveSelection);
         }
 
         public void FindPrev()
@@ -184,71 +208,171 @@ namespace DaxStudio.UI.ViewModels
             FindText();
         }
 
-        public void Close()
+        public override void Close()
         {
             IsVisible = false;
         }
 
-        
+        public bool SelectionActive
+        {
+            get { return _selectionActive; }
+            set
+            {
+                if (Editor == null) return;
+                _selectionStart = Editor.SelectionStart;
+                _selectionLength = Editor.SelectionLength;
+                _selectionActive = value;
+
+                if (_selectionActive)
+                {
+                    Editor.FindSelectionOffset = _selectionStart;
+                    Editor.FindSelectionLength = _selectionLength;
+                }
+                else
+                {
+                    Editor.ClearFindSelection();
+                }
+
+                NotifyOfPropertyChange(() => SelectionActive);
+            }
+        }
+
         public void ReplaceText()
         {
-            Regex regex = GetRegEx(TextToFind);
-            string input = editor.Text.Substring(editor.SelectionStart, editor.SelectionLength);
-            Match match = regex.Match(input);
-            bool replaced = false;
-            if (match.Success && match.Index == 0 && match.Length == input.Length)
+            if (UseRegex)
             {
-                editor.DocumentReplace(editor.SelectionStart, editor.SelectionLength, TextToReplace);
-                replaced = true;
+                ReplaceTextViaRegex();
+            } else
+            {
+                ReplaceTextDirectly();
             }
 
-            if (!FindNextInternal() && !replaced)
-                SystemSounds.Beep.Play();
+        }
+
+        public void ReplaceTextViaRegex()
+        {
+            try
+            {
+                Regex regex = GetRegEx(TextToFind);
+                string input = Editor.Text.Substring(Editor.SelectionStart, Editor.SelectionLength);
+                Match match = regex.Match(input);
+                bool replaced = false;
+                var newText = Regex.Replace(input, TextToFind, TextToReplace);
+
+                if (match.Success && match.Index == 0 && match.Length == input.Length)
+                {
+                    Editor.DocumentReplace(Editor.SelectionStart, Editor.SelectionLength, newText);
+                    var delta = TextToReplace.Length - match.Length;
+                    if (SelectionActive) _selectionLength += delta;
+
+                    replaced = true;
+                }
+
+                if (!FindNextInternal() && !replaced)
+                    SystemSounds.Beep.Play();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(FindReplaceDialogViewModel), nameof(ReplaceTextViaRegex), ex.Message);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error trying to replace text: ${ex.Message}"));
+            }
+        }
+
+        public void ReplaceTextDirectly()
+        {
+            try
+            {
+                Regex regex = GetRegEx(TextToFind);
+                string input = Editor.Text.Substring(Editor.SelectionStart, Editor.SelectionLength);
+                Match match = regex.Match(input);
+                bool replaced = false;
+
+                if (match.Success && match.Index == 0 && match.Length == input.Length)
+                {
+                    Editor.DocumentReplace(Editor.SelectionStart, Editor.SelectionLength, TextToReplace);
+                    var delta = TextToReplace.Length - match.Length;
+                    if (SelectionActive) _selectionLength += delta;
+
+                    replaced = true;
+                }
+
+                if (!FindNextInternal() && !replaced)
+                    SystemSounds.Beep.Play();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Constants.LogMessageTemplate, nameof(FindReplaceDialogViewModel), nameof(ReplaceTextDirectly), ex.Message);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error trying to replace text: ${ex.Message}"));
+            }
         }
 
         public void ReplaceAllText()
         {
-            
-            Regex regex = GetRegEx(TextToFind, true);
-            int offset = 0;
-            editor.BeginChange();
-            // TODO  if selectionlength > 0 replace only in selection
-            foreach (Match match in regex.Matches(editor.Text))
+            try
             {
-                editor.DocumentReplace(offset + match.Index, match.Length, TextToReplace);
-                offset += TextToReplace.Length - match.Length;
+                Regex regex = GetRegEx(TextToFind, true);
+                Editor.BeginChange();
+                var initialText = SelectionActive ? Editor.DocumentGetText(_selectionStart, _selectionLength) : Editor.Text;
+
+                var newText = regex.Replace(initialText, TextToReplace);
+                
+                Editor.DocumentReplace(StartOfSearchScope, initialText.Length, newText);
+
+                Editor.EndChange();
             }
-            editor.EndChange();
-            
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(FindReplaceDialogViewModel), nameof(ReplaceAllText), ex.Message);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error Replacing All Text: {ex.Message}" ));
+            }
+
         }
 
-        private bool FindNextInternal()
+        private int _selectionStart = 0;
+        private int _selectionLength = 0;
+        private bool _selectionActive = false;
+
+        private bool FindNextInternal(bool moveSelection = true)
         {
             // TODO - if we have a multi-line selection then we only want to search inside that
 
             Regex regex = GetRegEx(TextToFind);
-            int start = regex.Options.HasFlag(RegexOptions.RightToLeft) ? 
-            editor.SelectionStart : editor.SelectionStart + editor.SelectionLength;
-            Match match = regex.Match(editor.Text, start);
+            int start = Editor.SelectionStart;
+            if (moveSelection)
+                 start = regex.Options.HasFlag(RegexOptions.RightToLeft) ? Editor.SelectionStart : Editor.SelectionStart + Editor.SelectionLength;
+            Match match = regex.Match(Editor.Text, start);
 
             if (!match.Success)  // start again from beginning or end
             {
                 if (regex.Options.HasFlag(RegexOptions.RightToLeft))
-                    match = regex.Match(editor.Text, editor.Text.Length);
+                    match = regex.Match(Editor.Text, EndOfSearchScope);
                 else
-                    match = regex.Match(editor.Text, 0);
+                    match = regex.Match(Editor.Text, StartOfSearchScope);
             }
-
-            if (match.Success)
+            // if we are searching inside the selection and the next match is outside the selection then start again from the beginning or end
+            if (match.Success && SelectionActive && (match.Index > EndOfSearchScope || match.Index < StartOfSearchScope))
             {
-                editor.Select(match.Index, match.Length);
-                TextLocation loc = editor.DocumentGetLocation(match.Index);
-                editor.ScrollTo(loc.Line, loc.Column);
+                if (regex.Options.HasFlag(RegexOptions.RightToLeft))
+                    match = regex.Match(Editor.Text, EndOfSearchScope);
+                else
+                    match = regex.Match(Editor.Text, StartOfSearchScope);
             }
 
-            return match.Success;
+            if ((match.Success && !SelectionActive)
+                ||  (SelectionActive  && (match.Index <= EndOfSearchScope && match.Index >= StartOfSearchScope)))
+            {
+                Editor.Select(match.Index, match.Length);
+                TextLocation loc = Editor.DocumentGetLocation(match.Index);
+                Editor.ScrollTo(loc.Line, loc.Column);
+                return true;
+            }
+
+            return false;
         }
-        
+
+        private int EndOfSearchScope { get { return SelectionActive? _selectionStart + _selectionLength : Editor.Text.Length; } }
+        private int StartOfSearchScope { get { return SelectionActive ? _selectionStart : 0; } }
+
         private Regex GetRegEx(string textToFind, bool leftToRight = false)
         {
             RegexOptions options = RegexOptions.None;
@@ -264,8 +388,10 @@ namespace DaxStudio.UI.ViewModels
             else
             {
                 string pattern = Regex.Escape(textToFind);
-                if (UseWildcards)
-                    pattern = pattern.Replace("\\*", ".*").Replace("\\?", ".");
+                if (UseWildcards && !UseWholeWord)
+                    pattern = pattern.Replace("\\*", ".*?").Replace("\\?", ".");
+                if (UseWildcards && UseWholeWord)
+                    pattern = pattern.Replace("\\*", "[^\\s]*?").Replace("\\?", ".");
                 if (UseWholeWord)
                     pattern = "\\b" + pattern + "\\b";
                 return new Regex(pattern, options);
@@ -273,9 +399,6 @@ namespace DaxStudio.UI.ViewModels
         }
 
 #endregion
-
-
-
         
     }
 }

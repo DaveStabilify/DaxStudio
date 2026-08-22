@@ -1,60 +1,58 @@
-﻿using System;
+﻿using DaxStudio.Core.Events;
+using DaxStudio.UI.ViewModels;
+using System.Windows;
+using System.Windows.Documents;
+using System.Windows.Input;
 
 namespace DaxStudio.UI.Events
 {
-    public class OutputMessage
-    {
-        private readonly double _durationMs = double.NaN;
 
-        // constructor for syntax errors
-        public OutputMessage(MessageType messageType, string text, int row, int column) : this(messageType,text)
-        {
+    public class LocationOutputMessage : OutputMessage  {
+        public LocationOutputMessage(MessageType messageType, string text, int row, int column): base(messageType, text) {
+
             Row = row;
             Column = column;
-            LocationSet = true;
         }
-        public OutputMessage(MessageType messageType, string text, double durationMs) : this (messageType,text)
+        public FlowDocument Document
         {
-            _durationMs = durationMs;
-        }
-
-        public OutputMessage(MessageType messageType, string text)
-        {
-            Row = -1;
-            Column = -1;
-            Text = text;
-            MessageType = messageType;
-            Start = DateTime.Now;
-            _durationMs = double.NaN;
-        }
-
-        public string Text { get; set; }
-        public DateTime Start { get; set; }
-        public MessageType MessageType { get; set; }
-        public int Row { get; private set; }
-        public int Column { get; private set; }
-        public bool LocationSet { get; private set; }
-        public double DurationMs { get { return _durationMs; } }
-        public string DurationString {
             get
             {
-                if (double.IsNaN(_durationMs ))
-                    return string.Empty;
-                return _durationMs.ToString("#,##0");
+                var doc = new FlowDocument
+                {
+                    PagePadding = new Thickness(0),
+                    ColumnWidth = double.PositiveInfinity
+                };
+                Paragraph para = new Paragraph
+                {
+                    Margin = new Thickness(0)
+                };
+                doc.Blocks.Clear();
+                doc.Blocks.Add(para);
+                // if we have a row and column then add a hyperlink to the location
+                if (Row != -1 && Column != -1)
+                {
+                    var run2 = new Run($"Goto ({Row},{Column})");
+
+                    Hyperlink hlink = new Hyperlink(run2)
+                    {
+                        ToolTip = $"Go to location ({Row},{Column})",
+                        Cursor = Cursors.Hand
+                    };
+                    var parent = Parent as OutputPaneViewModel;
+                    var self = this;
+                    hlink.Click += (s, e) => parent?.GotoLocation.Execute(self);
+                    para.Inlines.Add(hlink);
+                    para.Inlines.Add(" ");
+                }
+
+                Run run = new Run(Text);
+                para.Inlines.Add(run);
+
+                return doc;
             }
         }
 
-        public void MessageDoubleClick()
-        {
-            System.Diagnostics.Debug.WriteLine("message double click");
-        }
+        public int Row { get; protected set; } = -1;
+        public int Column { get; protected set; } = -1;
     }
-
-    public enum MessageType
-    {
-        Information
-        ,Warning
-        ,Error
-    }
-     
 }

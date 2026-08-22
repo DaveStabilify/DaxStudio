@@ -10,7 +10,7 @@ using System.Text.RegularExpressions;
 using System.Xml;
 
 
-namespace DaxStudio.Checker
+namespace DaxStudio.CheckerApp
 {
     /// <summary>
     /// Interaction logic for MainWindow.xaml
@@ -29,19 +29,21 @@ namespace DaxStudio.Checker
             try
             {
                 checker = new Checker(Output);
-                checker.SetFusionLoggingState(menuToggleFusionLogging);
-                checker.SetVSTOLoggingState(menuToggleVSTOLogging);
+                Checker.SetFusionLoggingState(menuToggleFusionLogging);
+                Checker.SetVSTOLoggingState(menuToggleVSTOLogging);
                 checker.ShowVersionInfo();
                 checker.CheckOSInfo();
+                checker.CheckScreenInfo();
                 checker.CheckNetFramework();
-                checker.CheckLocalLibrary("AMO", "bin\\Microsoft.AnalysisServices.dll");
-                checker.CheckLibraryExact("Microsoft.AnalysisServices",true);
-                checker.CheckLocalLibrary("ADOMD.NET", "bin\\Microsoft.AnalysisServices.AdomdClient.dll");
-                checker.CheckLibraryExact("Microsoft.AnalysisServices.AdomdClient", true);
-                checker.CheckLibrary("AMO",       "Microsoft.AnalysisServices, Version={0}.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91");
-                checker.CheckLibrary("ADOMD.NET", "Microsoft.AnalysisServices.AdomdClient, Version={0}.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91");
+                //checker.CheckLocalLibrary("AMO", "Microsoft.AnalysisServices.dll");
+                //checker.CheckLibraryExact("Microsoft.AnalysisServices",true);
+                //checker.CheckLocalLibrary("ADOMD.NET", "Microsoft.AnalysisServices.AdomdClient.dll");
+                //checker.CheckLibraryExact("Microsoft.AnalysisServices.AdomdClient", true);
+                //checker.CheckLibrary("AMO",       "Microsoft.AnalysisServices, Version={0}.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91");
+                //checker.CheckLibrary("ADOMD.NET", "Microsoft.AnalysisServices.AdomdClient, Version={0}.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91");
                 checker.CheckDaxStudioBindings();
                 checker.CheckExcelAddin();
+                checker.CheckSettings();
             }
             catch (Exception exception)
             {
@@ -75,17 +77,17 @@ namespace DaxStudio.Checker
 
         private void OnToggleFusionLoggingMenuClick(object sender, RoutedEventArgs e)
         {
-            checker.ToggleFusionLogging(menuToggleFusionLogging.IsChecked);
+            Checker.ToggleFusionLogging(menuToggleFusionLogging.IsChecked);
         }
 
         private void OnToggleVSTOLoggingMenuClick(object sender, RoutedEventArgs e)
         {
-            checker.ToggleVSTOLogging(this.menuToggleVSTOLogging.IsChecked);
+            Checker.ToggleVSTOLogging(this.menuToggleVSTOLogging.IsChecked);
         }
 
         private void OnOpenFusionLogFolderMenuClick(object sender, RoutedEventArgs e)
         {
-            checker.OpenFusionLogFolder();
+            Checker.OpenFusionLogFolder();
         }
     }
 }

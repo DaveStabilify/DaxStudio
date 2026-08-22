@@ -6,21 +6,27 @@ using System.Threading.Tasks;
 using xlAmo = ExcelAmo.Microsoft.AnalysisServices;
 using System.Xml;
 using System.Timers;
-using ADOTabular.AdomdClientWrappers;
 using DaxStudio.QueryTrace.Interfaces;
-using Serilog;
+using Serilog; 
 using Caliburn.Micro;
+using System.Globalization;
+using System.Diagnostics.Contracts;
+using ADOTabular.Enums;
+using System.Linq;
+using System.IO;
+using DaxStudio.Common.Enums;
+using ADOTabular.Utils;
 
 namespace DaxStudio.QueryTrace
 {
-    public class QueryTraceEngineExcel: IQueryTrace
+    public class QueryTraceEngineExcel : IQueryTrace, IDisposable
     {
 #region public IQueryTrace interface
-        public Task StartAsync(int startTimeoutSecs)
+        public async Task StartAsync(int startTimeoutSec)
         {
             Log.Debug("{class} {method} {message}", "QueryTraceEngineExcel", "StartAsync", "entered");
-            this.TraceStartTimeoutSecs = startTimeoutSecs;
-            return Task.Run(() => Start());
+            TraceStartTimeoutSecs = startTimeoutSec;
+            await Task.Run(() => Start()).ConfigureAwait(false);
         }
 
         public void Stop()
@@ -43,18 +49,13 @@ namespace DaxStudio.QueryTrace
                         {
                             _startingTimer.Stop();
                             _startingTimer.Elapsed -= OnTimerElapsed;
-                            _connection.Close(false);
-                            _connection.Dispose();
-                            _connection = null;
                         }
                     }
 
                     if (shouldDispose)
                     {
                         //_trace.OnEvent -= OnTraceEventInternal;
-                        _trace.Drop();
-                        _trace.Dispose();
-                        _trace = null;
+                        Dispose();
                     }
                     else
                     {
@@ -74,65 +75,71 @@ namespace DaxStudio.QueryTrace
         }
 
         public int TraceStartTimeoutSecs { get; private set; }
-        public QueryTraceStatus Status
-        {
-	        get { return _status;  }
-            private set {_status = value;}
-        }
+        public QueryTraceStatus Status { get; private set; }
 
         public List<DaxStudioTraceEventClass> Events { get; }
-        public delegate void DaxStudioTraceEventHandler(System.Object sender, DaxStudioTraceEventArgs e);
+#pragma warning disable CA1711 // Identifiers should not have incorrect suffix
+        public delegate void DaxStudioTraceEventHandler(object sender, DaxStudioTraceEventArgs e);
+#pragma warning restore CA1711 // Identifiers should not have incorrect suffix
 
-        public event DaxStudioTraceEventHandler TraceEvent;
-        public event EventHandler<IList<DaxStudioTraceEventArgs>> TraceCompleted;
+        //public event DaxStudioTraceEventHandler TraceEvent;
+        public event EventHandler<DaxStudioTraceEventArgs> TraceEvent;
+        public event EventHandler TraceCompleted;
         public event EventHandler TraceStarted;
+        public event EventHandler PingTrace;
         public event EventHandler<string> TraceError;
+        public event EventHandler<string> TraceWarning;
+        #endregion
 
-#endregion
-
-#region Internal implementation
+        #region Internal implementation
         private xlAmo.Server _server;
         private xlAmo.Trace _trace;
-        private DateTime utcPingStart;
-        private QueryTraceStatus _status;
+        private DateTime _utcPingStart;
         private string _connectionString;
         private readonly string _originalConnectionString;
-        private ADOTabular.ADOTabularConnection _connection;
+
         private AdomdType _connectionType;
         private readonly string _sessionId;
-        //private List<DaxStudioTraceEventClass> _eventsToCapture;
+        
         private Timer _startingTimer;
         private List<DaxStudioTraceEventArgs> _capturedEvents = new List<DaxStudioTraceEventArgs>();
-        private string _friendlyServerName = "";
-        //public delegate void TraceStartedHandler(object sender);//, TraceStartedEventArgs eventArgs);
-
+        private string _friendlyServerName = string.Empty;
+        private readonly string _suffix = string.Empty;
+        private string _location = string.Empty;
         
-        public QueryTraceEngineExcel(string connectionString, AdomdType connectionType, string sessionId, string applicationName, List<DaxStudioTraceEventClass> events, bool filterForCurrentSession)
+        public QueryTraceEngineExcel(string connectionString, AdomdType connectionType, string sessionId, string applicationName, List<DaxStudioTraceEventClass> events, bool filterForCurrentSession, string suffix)
         {
+            Contract.Requires(connectionString != null, "connectionString must not be null");
+
             Status = QueryTraceStatus.Stopped;
             _originalConnectionString = connectionString;
             _sessionId = sessionId;
+
+            _suffix = suffix;
             FilterForCurrentSession = filterForCurrentSession;
-            ConfigureTrace(connectionString, connectionType, sessionId, applicationName);
+            ConfigureTrace(connectionString, connectionType, applicationName);
             Events = events;
         }
 
-        public bool FilterForCurrentSession { get; private set; }
+        public bool FilterForCurrentSession { get; }
 
-        private void ConfigureTrace(string connectionString, AdomdType connectionType, string sessionId, string applicationName) //, List<DaxStudioTraceEventClass> events)
+        private void ConfigureTrace(string connectionString, AdomdType connectionType, string applicationName) //, List<DaxStudioTraceEventClass> events)
         {
             //_connectionString = string.Format("{0};SessionId={1}",connectionString,sessionId);
             _connectionString = connectionString;
             _connectionString = _connectionString.Replace("MDX Compatibility=1;", ""); // remove MDX Compatibility setting
             _connectionString = _connectionString.Replace("Cell Error Mode=TextValue;", ""); // remove MDX Compatibility setting
+            var vals = ConnectionStringParser.Parse(connectionString);
+            vals.TryGetValue("Location", out _location);
             _connectionType = connectionType;
             _applicationName = applicationName;
         }
-        private void SetupTrace(xlAmo.Trace trace, List<DaxStudioTraceEventClass> events)
+        private static void SetupTrace(xlAmo.Trace trace, List<DaxStudioTraceEventClass> events)
         {
             Log.Debug("{class} {method} {event}", "QueryTraceEngineExcel", "SetupTrace", "enter");
             trace.Events.Clear();
-            // Add CommandBegin so we can catch the heartbeat events
+            // Add CommandBegin & DiscoverBegin so we can catch the heartbeat events
+            trace.Events.Add(TraceEventFactoryExcel.CreateTrace(xlAmo.TraceEventClass.DiscoverBegin)); 
             trace.Events.Add(TraceEventFactoryExcel.CreateTrace(xlAmo.TraceEventClass.CommandBegin));
             // Add QueryEnd so we know when to stop the trace
             trace.Events.Add(TraceEventFactoryExcel.CreateTrace(xlAmo.TraceEventClass.QueryEnd));
@@ -142,11 +149,12 @@ namespace DaxStudio.QueryTrace
             {
                 // PowerPivot in Excel does not have direct query events, so skip it if makes it this far
                 if (eventClass == DaxStudioTraceEventClass.DirectQueryEnd) continue;
-
+                // PowerPivot in Excel does not have ExecutionMetrics events, so skip it if makes it this far
+                if (eventClass == DaxStudioTraceEventClass.ExecutionMetrics) continue;
                 var amoEventClass = (ExcelAmo.Microsoft.AnalysisServices.TraceEventClass)eventClass;
                 if (trace.Events.Find(amoEventClass) != null)
                     continue;
-
+                
                 xlAmo.TraceEvent trcEvent = TraceEventFactoryExcel.CreateTrace(amoEventClass);
                 trace.Events.Add(trcEvent);
             }
@@ -154,29 +162,45 @@ namespace DaxStudio.QueryTrace
             Log.Debug("{class} {method} {event}", "QueryTraceEngineExcel", "SetupTrace", "exit");
         }
 
-        private XmlNode GetSpidFilter(int spid)
+#pragma warning disable IDE0051 // Remove unused private members
+        private static  XmlNode GetSpidFilter(int spid)
+#pragma warning restore IDE0051 // Remove unused private members
         {
-            var filterXml = string.Format(
-                "<Equal xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\"><ColumnID>{0}</ColumnID><Value>{1}</Value></Equal>"
+            var filterXml = string.Format(CultureInfo.InvariantCulture
+                , "<Equal xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\"><ColumnID>{0}</ColumnID><Value>{1}</Value></Equal>"
                 , (int)xlAmo.TraceColumn.Spid
                 , spid );
-            var doc = new XmlDocument();
-            doc.LoadXml(filterXml);
-            return doc;
+            var doc = new XmlDocument()
+            { 
+                XmlResolver = null
+            };
+
+            var stringReader = new StringReader(filterXml);
+            using (var reader = XmlReader.Create(stringReader, new XmlReaderSettings() { XmlResolver = null }))
+            {
+                doc.Load(reader);
+                return doc;
+            }
+            
         }
 
-        private XmlNode GetSessionIdFilter(string sessionId)
+        private static XmlNode GetSessionIdFilter(string sessionId)
         {
             string filterTemplate = "<Equal xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\">" +
                             "<ColumnID>{0}</ColumnID><Value>{1}</Value>" +
                             "</Equal>";
-            var filterXml = string.Format(
-                filterTemplate
+            var filterXml = string.Format(CultureInfo.InvariantCulture
+                , filterTemplate
                 , (int)xlAmo.TraceColumn.SessionID
                 , sessionId);
-            var doc = new XmlDocument();
-            doc.LoadXml(filterXml);
-            return doc;
+            var doc = new XmlDocument() { XmlResolver = null };
+
+            var stringReader = new StringReader(filterXml);
+            using (XmlReader reader = XmlReader.Create(stringReader, new XmlReaderSettings() { XmlResolver = null }))
+            {
+                doc.Load(reader);
+                return doc;
+            }
         }
 
 
@@ -190,15 +214,15 @@ namespace DaxStudio.QueryTrace
                     if (_trace.IsStarted || Status == QueryTraceStatus.Starting || Status == QueryTraceStatus.Started)
                     {
                         Log.Debug("{class} {method} {event}", "QueryTraceEngine", "Start", "exiting method - trace already started");
-                        return; // if threturn; // exit here if trace is already startede trace is already running exit here
+                        return;  // exit here if trace is already started trace is already running exit here
                     }
 
 	            if (Status != QueryTraceStatus.Started)  Status = QueryTraceStatus.Starting;
 				Log.Debug("{class} {method} {event}", "QueryTraceEngine", "Start", "Connecting to: " + _connectionString);
                 //HACK - wait 1.5 seconds to allow trace to start 
-                //       using the ping method thows a connection was lost error when starting a second trace
-                _connection = new ADOTabular.ADOTabularConnection(string.Format("{0};SessionId={1}", _originalConnectionString, _sessionId), _connectionType);
-                _connection.Open();
+                //       using the ping method throws a connection was lost error when starting a second trace
+                //_connection = new ADOTabular.ADOTabularConnection($"{_originalConnectionString};SessionId={_sessionId}", _connectionType);
+                //_connection.Open();
                 _trace = GetTrace();
 	            SetupTrace(_trace, Events);
 
@@ -211,17 +235,17 @@ namespace DaxStudio.QueryTrace
 	                _startingTimer = new Timer();
                 //HACK - wait 1.5 seconds to allow trace to start 
                 //       using the ping method thows a connection was lost error when starting a second trace
-                _startingTimer.Interval = 300;  //TODO - make time interval shorter?
+                _startingTimer.Interval = 300;  
 	            _startingTimer.Elapsed += OnTimerElapsed;
 	            _startingTimer.Enabled = true;
 	            _startingTimer.Start();
-	            utcPingStart = DateTime.UtcNow;
+	            _utcPingStart = DateTime.UtcNow;
                 // Wait for Trace to become active
                 Log.Debug("{class} {method} {event}", "QueryTraceEngine", "Start", "exit");
             }
 			catch (Exception ex)
 			{
-                RaiseError(string.Format("Error starting trace: {0}", ex.Message));
+                OutputError($"Error starting trace: {ex.Message}" );
 				Log.Error("{class} {method} {message} {stacktrace}","QueryTraceEngine" , "Start", ex.Message, ex.StackTrace);
 			}
         }
@@ -231,28 +255,19 @@ namespace DaxStudio.QueryTrace
             Log.Debug("{class} {method} {event}", "QueryTraceEngineExcel", "OnTimerElapsed", "Ping");
             //HACK - wait 1.5 seconds to allow trace to start 
             //       using the ping method thows a connection was lost error when starting a second trace
-            Execute.OnUIThread(() => _connection.Ping());
+            Execute.OnUIThread(() => PingTrace?.Invoke(this,null));
             //Execute.OnUIThread(() => ServerPing());
             // if past timeout then exit and display error
-            if ((utcPingStart - DateTime.UtcNow).Seconds > TraceStartTimeoutSecs)
+            if ((_utcPingStart - DateTime.UtcNow).Seconds > TraceStartTimeoutSecs)
             {
                 _startingTimer.Stop();
                 _trace.Drop();
-                RaiseError("Timeout exceeded attempting to start Trace");
+                OutputError("Timeout exceeded attempting to start Trace. You could try increasing this timeout in the Options");
                 Log.Warning("{class} {method} {event}", "QueryTraceEngineExcel", "OnTimerElapsed", "Timeout exceeded attempting to start Trace");
             }
-            //StopTimer();
-            //Status = QueryTraceStatus.Started;
-            //_traceStarted = true;
-            //if (TraceStarted != null)
-            //    TraceStarted(this, null);
+
         }
 
-        //private void ServerPing()
-        //{
-        //    _server.StartXmlaRequest(ExcelAmo.Microsoft.AnalysisServices.XmlaRequestType.Execute);
-        //    _server.EndXmlaRequest();
-        //}
 
         private xlAmo.Trace GetTrace()
         {
@@ -262,7 +277,7 @@ namespace DaxStudio.QueryTrace
                 Log.Debug("{class} {method} {event}", "QueryTraceEngineExcel", "GetTrace", "about to create new trace");
                 _server = new xlAmo.Server();
                 _server.Connect(_connectionString);
-                _trace = _server.Traces.Add( string.Format("DaxStudio_Trace_SPID_{0}", _sessionId));
+                _trace = _server.Traces.Add( $"DaxStudio_Trace_SPID_{_sessionId}_{_suffix}");
                 if (FilterForCurrentSession) _trace.Filter = GetSessionIdFilter(_sessionId);
                 // set default stop time in case trace gets disconnected
                 //_trace.StopTime = DateTime.UtcNow.AddHours(24);
@@ -276,13 +291,20 @@ namespace DaxStudio.QueryTrace
             TraceEvent?.Invoke(this, e);
         }
 
-        public void RaiseError( string message)
+        public void OutputError( string message)
         {
-            if (TraceError != null) TraceError(this, message);
+            TraceError?.Invoke(this, message);
+        }
+
+        public void OutputWarning(string message)
+        {
+            TraceWarning?.Invoke(this, message);
         }
 
         private bool _traceStarted;
+#pragma warning disable IDE0052 // Remove unread private members
         private string _applicationName;
+#pragma warning restore IDE0052 // Remove unread private members
         
         private void OnTraceEventInternal(object sender, xlAmo.TraceEventArgs e)
         {
@@ -290,30 +312,44 @@ namespace DaxStudio.QueryTrace
             // has started capturing events
             if (!_traceStarted)
             {
-                Log.Debug("{class} {mothod} Pending TraceEvent: {eventClass}","QueryTraceEngineExcel","OnTraceEventInternal", e.EventClass.ToString());
+                Log.Debug("{class} {method} Pending TraceEvent: {eventClass}","QueryTraceEngineExcel","OnTraceEventInternal", e.EventClass.ToString());
                 StopTimer();
                 _traceStarted = true;
-                _connection.Close(false);
-                _connection.Dispose();
-                _connection = null;
                 Status = QueryTraceStatus.Started;
                 TraceStarted?.Invoke(this, null);
 
-                var f = new System.IO.FileInfo(_trace.Parent.Name);
-                _friendlyServerName = f.Name;
+                _friendlyServerName = GetShortFileName(_trace.Parent.Name);
             }
             else
             {
+                // exit early if this is a DiscoverBegin event (used for the trace heartbeat)
+                if (e.EventClass == xlAmo.TraceEventClass.DiscoverBegin ) return;
+
                 Log.Debug("{class} {method} TraceEvent: {eventClass}", "QueryTraceEngineExcel", "OnTraceEventInternal", e.EventClass.ToString());
-                //OnTraceEvent(e);
+                OnTraceEvent(CreateTraceEventArg(e, _friendlyServerName));
                 _capturedEvents.Add( CreateTraceEventArg(e, _friendlyServerName));
-                if (e.EventClass == xlAmo.TraceEventClass.QueryEnd)
+                if (e.EventClass == xlAmo.TraceEventClass.QueryEnd || e.EventClass == xlAmo.TraceEventClass.Error)
                 {
                     // Raise an event with the captured events
-                    TraceCompleted?.Invoke(this, _capturedEvents);
+                    TraceCompleted?.Invoke(this,null);
                     // reset the captured events collection
                     _capturedEvents = new List<DaxStudioTraceEventArgs>();
                 }
+            }
+        }
+
+        private static string GetShortFileName(string filename)
+        {
+          
+            if (filename.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || filename.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            {
+                return filename.Split('/').Last();
+            }
+            else
+            {
+                var fi = new FileInfo(filename);
+                return fi.Name;
             }
         }
 
@@ -326,7 +362,7 @@ namespace DaxStudio.QueryTrace
         }
 
 #endregion
-        private DaxStudioTraceEventArgs CreateTraceEventArg(xlAmo.TraceEventArgs traceEvent, string xlsxFile)
+        private static DaxStudioTraceEventArgs CreateTraceEventArg(xlAmo.TraceEventArgs traceEvent, string xlsxFile)
         {
             long cpuTime;
             long duration;
@@ -340,6 +376,7 @@ namespace DaxStudio.QueryTrace
             {
                 cpuTime = 0;
             }
+
             // not all events have a duration
             try
             {
@@ -372,24 +409,50 @@ namespace DaxStudio.QueryTrace
             return dsEvent;
         }
 
-        public void Update(string databaseName)
-        {
-            // Note: Excel Query Trace does not use the database name parameter
-            Update();
-        }
 
-        public void Update()
-        {
-            Stop(false);
-            Start();
-        }
+        private bool disposedValue; // To detect redundant calls
 
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    
+                    if (_trace != null)
+                    {
+                        _trace.OnEvent -= OnTraceEventInternal;
+                        try
+                        {
+                            _trace?.Drop();
+                            _trace?.Dispose();
+                        }
+                        finally
+                        {
+                            _trace = null;
+                        }
+                    }
+                    
+                    _server?.Disconnect();
+                    _server?.Dispose();
+                    _server = null;
+                    
+                    if (_startingTimer != null)
+                    {
+                        _startingTimer.Stop();
+                        _startingTimer.Elapsed -= OnTimerElapsed;
+                        _startingTimer.Dispose();
+                        _startingTimer = null;
+                    }
+                }
+
+                disposedValue = true;
+            }
+        }
         public void Dispose()
         {
-            if (_trace == null) return;
-			_trace.OnEvent -= OnTraceEventInternal;
-            _trace.Dispose();
-			_trace = null;
+            Dispose(true);
+            GC.SuppressFinalize(this);
         }
     }
 }

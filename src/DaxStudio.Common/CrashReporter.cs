@@ -1,28 +1,39 @@
-﻿using CrashReporterDotNET;
-using System;
-using System.Globalization;
+﻿using System;
+#if NET472
+using CrashReporterDotNET;
+#endif
+using Serilog;
 
-namespace DaxStudio.UI.Utils
+namespace DaxStudio.Common
 {
     public static class CrashReporter
     {
-        private static Guid applicationID = new Guid("ca045521-7046-4979-9db9-3418a1352e94");
+        private static readonly Guid ApplicationId = new Guid("ca045521-7046-4979-9db9-3418a1352e94");
         
         public static void ReportCrash(Exception exception, string developerMessage)
         {
+            Log.Error(exception, "About to call CrashReporter");
+            Log.CloseAndFlush();
+
+            Telemetry.TrackException(exception,developerMessage);
+
+#if NET472
             var reportCrash = new ReportCrash("daxstudiocrash@gmail.com")
             {
                 AnalyzeWithDoctorDump = true,
                 DeveloperMessage = developerMessage,
                 DoctorDumpSettings = new DoctorDumpSettings()
                 {
-                    ApplicationID = applicationID,
+                    ApplicationID = ApplicationId,
                     OpenReportInBrowser = true,  // open DrDump report page
                     SendAnonymousReportSilently = true
                 }
             };
 
             reportCrash.Send(exception);
+#else
+            Log.Error(exception, "CrashReporter is not available on this platform. Developer message: {Message}", developerMessage);
+#endif
 
         }
         

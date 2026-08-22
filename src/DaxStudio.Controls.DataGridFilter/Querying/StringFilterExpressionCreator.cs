@@ -6,7 +6,7 @@ using DaxStudio.Controls.DataGridFilter.Support;
 
 namespace DaxStudio.Controls.DataGridFilter.Querying
 {
-    internal class StringFilterExpressionCreator
+    internal sealed class StringFilterExpressionCreator
     {
         const string WildcardAnyString = "%";
 
@@ -92,13 +92,13 @@ namespace DaxStudio.Controls.DataGridFilter.Querying
 
                 if (expressionCompleted
                     && function != StringExpressionFunction.Undefined
-                    && expressionValue != String.Empty)
+                    && !string.IsNullOrEmpty(expressionValue))
                 {
-                    string expressionValueCopy = String.Copy(expressionValue);
+                    string expressionValueCopy = expressionValue;
 
                     expressionValueCopy = expressionValueCopy.Replace(WildcardAnyString, String.Empty);
 
-                    if (expressionValueCopy != String.Empty)
+                    if (!string.IsNullOrEmpty(expressionValueCopy))
                     {
                         filter.Add(createFunction(function, expressionValueCopy));
                     }

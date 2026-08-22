@@ -1,4 +1,5 @@
-﻿using DaxStudio.UI.Interfaces;
+using DaxStudio.Core.Interfaces;
+using DaxStudio.UI.Interfaces;
 using DaxStudio.UI.Model;
 using DaxStudio.UI.ViewModels;
 using System;
@@ -16,10 +17,11 @@ namespace DaxStudio.UI.Events
             _target = target;
         }
 
-        public NewDocumentEvent(IResultsTarget target, DocumentViewModel activeDocument)
+        public NewDocumentEvent(IResultsTarget target, DocumentViewModel activeDocument, bool copyContent = false)
         {
             _target = target;
             ActiveDocument = activeDocument;
+            CopyContent = copyContent;
         }
 
         public IResultsTarget Target
@@ -31,6 +33,6 @@ namespace DaxStudio.UI.Events
         }
         public string FileName { get; set; }
         public DocumentViewModel ActiveDocument { get; private set; }
-
+        public bool CopyContent { get; }
     }
 }

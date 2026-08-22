@@ -1,582 +1,114 @@
-﻿extern alias ExcelAdomdClientReference;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 
 namespace ADOTabular.AdomdClientWrappers
 {
-    public class AdomdDataReader : System.Data.IDataReader
+    public sealed class AdomdDataReader : System.Data.IDataReader
     {
-        private Microsoft.AnalysisServices.AdomdClient.AdomdDataReader _obj;
-        private ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdDataReader _objExcel;
-        private AdomdType _type = AdomdType.AnalysisServices;
+        private readonly Microsoft.AnalysisServices.AdomdClient.AdomdDataReader _obj;
+
         public AdomdDataReader() { }
-        public AdomdDataReader(Microsoft.AnalysisServices.AdomdClient.AdomdDataReader obj)
+        public AdomdDataReader(Microsoft.AnalysisServices.AdomdClient.AdomdDataReader dataReader)
         {
-            _obj = obj;
-           
-            _type = AdomdType.AnalysisServices;
-            
-        }
-        public AdomdDataReader(ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdDataReader obj)
-        {
-            _objExcel = obj;
-            _type = AdomdType.Excel;
+            _obj = dataReader;         
         }
 
         public bool Read()
         {
-
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.Read();
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<bool> f = delegate
-                {
-                    return _objExcel.Read();
-                };
-                return f();
-            }
+            return _obj.Read();
         }
 
         public bool NextResult()
         {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.NextResult();
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<bool> f = delegate
-                {
-                    return _objExcel.NextResult();
-                };
-                return f();
-            }
+            return _obj.NextResult();
         }
 
 
 
         public void Close()
         {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                _obj.Close();
-            }
-            else
-            {
-                ExcelAdoMdConnections.VoidDelegate f = delegate
-                {
-                    _objExcel.Close();
-                };
-                f();
-            }
+            _obj.Close();
         }
 
-        public int Depth
-        {
-            get { if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.Depth;
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<int> f = delegate
-                {
-                    return _objExcel.Depth;
-                };
-                return f();
-            } }
-        }
+        public int Depth => _obj.Depth;
+        
 
         public DataTable GetSchemaTable()
         {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetSchemaTable();
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<DataTable> f = delegate
-                {
-                    return _objExcel.GetSchemaTable();
-                };
-                return f();
-            }
+            return _obj.GetSchemaTable();
         }
 
-        public bool IsClosed
-        {
-            get
-            {
-                if (_type == AdomdType.AnalysisServices)
-                {
-                    return _obj.IsClosed;
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<bool> f = delegate
-                    {
-                        return _objExcel.IsClosed;
-                    };
-                    return f();
-                }
-            }
-        }
+        public bool IsClosed => _obj.IsClosed;
 
-
-        public int RecordsAffected
-        {
-            get
-            {
-                if (_type == AdomdType.AnalysisServices)
-                {
-                    return _obj.RecordsAffected;
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<int> f = delegate
-                    {
-                        return _objExcel.RecordsAffected;
-                    };
-                    return f();
-                }
-            }
-        }
+        public int RecordsAffected => _obj.RecordsAffected;
 
         public void Dispose()
         {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                _obj.Dispose();
-            }
-            else
-            {
-                ExcelAdoMdConnections.VoidDelegate f = delegate
-                {
-                    _objExcel.Dispose();
-                };
-                f();
-            }
+            _obj.Dispose();
         }
 
-        public int FieldCount
-        {
-            get
-            {
-                if (_type == AdomdType.AnalysisServices)
-                {
-                    return _obj.FieldCount;
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<int> f = delegate
-                    {
-                        return _objExcel.FieldCount;
-                    };
-                    return f();
-                }
-            }
-        }
+        public int FieldCount => _obj.FieldCount;
 
         public ADOTabularConnection Connection { get; internal set; }
         public string CommandText { get; internal set; }
 
-        public bool GetBoolean(int i)
+        public bool GetBoolean(int i) =>  _obj.GetBoolean(i);
+
+        public byte GetByte(int i) => _obj.GetByte(i);
+
+        public long GetBytes(int i, long fieldOffset, byte[] buffer, int bufferoffset, int length)  => _obj.GetBytes(i,fieldOffset,buffer,bufferoffset,length);
+          
+
+        public char GetChar(int i) =>  _obj.GetChar(i);
+
+        public long GetChars(int i, long fieldoffset, char[] buffer, int bufferoffset, int length) =>  _obj.GetChars(i, fieldoffset,buffer,bufferoffset, length);
+            
+        public IDataReader GetData(int i) => _obj.GetData(i);
+            
+        public string GetDataTypeName(int i) => _obj.GetDataTypeName(i);
+            
+        public DateTime GetDateTime(int i) => _obj.GetDateTime(i);
+
+        public decimal GetDecimal(int i) => _obj.GetDecimal(i);
+            
+        public double GetDouble(int i) => _obj.GetDouble(i);
+            
+        public Type GetFieldType(int i) => _obj.GetFieldType(i);
+            
+        public bool IsDataReader(int i) 
         {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetBoolean(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<bool> f = delegate
-                {
-                    return _objExcel.GetBoolean(i);
-                };
-                return f();
-            }
+            return GetFieldType(i).Name == "XmlaDataReader" ;
         }
 
-        public byte GetByte(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetByte(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<byte> f = delegate
-                {
-                    return _objExcel.GetByte(i);
-                };
-                return f();
-            }
-        }
+        public string GetDataReaderValue(int i) => _obj.GetValue(i).ToString();
+            
 
-        public long GetBytes(int i, long fieldOffset, byte[] buffer, int bufferoffset, int length)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetBytes(i,fieldOffset,buffer,bufferoffset,length);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<long> f = delegate
-                {
-                    return _objExcel.GetBytes(i, fieldOffset,buffer,bufferoffset,length);
-                };
-                return f();
-            }
-        }
+        public float GetFloat(int i) => _obj.GetFloat(i);
 
-        public char GetChar(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetChar(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<char> f = delegate
-                {
-                    return _objExcel.GetChar(i);
-                };
-                return f();
-            }
-        }
+        public Guid GetGuid(int i) => _obj.GetGuid(i);
+            
+        public short GetInt16(int i) => _obj.GetInt16(i);
+            
+        public int GetInt32(int i) => _obj.GetInt32(i);
+            
+        public long GetInt64(int i) => _obj.GetInt64(i);
 
-        public long GetChars(int i, long fieldoffset, char[] buffer, int bufferoffset, int length)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetChars(i, fieldoffset,buffer,bufferoffset, length);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<long> f = delegate
-                {
-                    return _objExcel.GetChars(i,fieldoffset,buffer,bufferoffset, length);
-                };
-                return f();
-            }
-        }
-
-        public IDataReader GetData(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetData(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<IDataReader> f = delegate
-                {
-                    return _objExcel.GetData(i);
-                };
-                return f();
-            }
-        }
-
-        public string GetDataTypeName(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetDataTypeName(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<string> f = delegate
-                {
-                    return _objExcel.GetDataTypeName(i);
-                };
-                return f();
-            }
-        }
-
-        public DateTime GetDateTime(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetDateTime(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<DateTime> f = delegate
-                {
-                    return _objExcel.GetDateTime(i);
-                };
-                return f();
-            }
-        }
-
-        public decimal GetDecimal(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetDecimal(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<decimal> f = delegate
-                {
-                    return _objExcel.GetDecimal(i);
-                };
-                return f();
-            }
-        }
-
-        public double GetDouble(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetDouble(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<double> f = delegate
-                {
-                    return _objExcel.GetDouble(i);
-                };
-                return f();
-            }
-        }
-
-        public Type GetFieldType(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetFieldType(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<Type> f = delegate
-                {
-                    return _objExcel.GetFieldType(i);
-                };
-                return f();
-            }
-        }
-
-        public float GetFloat(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetFloat(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<float> f = delegate
-                {
-                    return _objExcel.GetFloat(i);
-                };
-                return f();
-            }
-        }
-
-        public Guid GetGuid(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetGuid(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<Guid> f = delegate
-                {
-                    return _objExcel.GetGuid(i);
-                };
-                return f();
-            }
-        }
-
-        public short GetInt16(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetInt16(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<short> f = delegate
-                {
-                    return _objExcel.GetInt16(i);
-                };
-                return f();
-            }
-        }
-
-        public int GetInt32(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetInt32(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<int> f = delegate
-                {
-                    return _objExcel.GetInt32(i);
-                };
-                return f();
-            }
-        }
-
-        public long GetInt64(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetInt64(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<long> f = delegate
-                {
-                    return _objExcel.GetInt64(i);
-                };
-                return f();
-            }
-        }
-
-        public string GetName(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetName(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<string> f = delegate
-                {
-                    return _objExcel.GetName(i);
-                };
-                return f();
-            }
-        }
-
-        public int GetOrdinal(string name)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetOrdinal(name);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<int> f = delegate
-                {
-                    return _objExcel.GetOrdinal(name);
-                };
-                return f();
-            }
-        }
-
-        public string GetString(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetString(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<string> f = delegate
-                {
-                    return _objExcel.GetString(i);
-                };
-                return f();
-            }
-        }
-
-        public object GetValue(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetValue(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<object> f = delegate
-                {
-                    return _objExcel.GetValue(i);
-                };
-                return f();
-            }
-        }
-
-        public int GetValues(object[] values)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.GetValues(values);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<int> f = delegate
-                {
-                    return _objExcel.GetValues(values);
-                };
-                return f();
-            }
-        }
-
-        public bool IsDBNull(int i)
-        {
-            if (_type == AdomdType.AnalysisServices)
-            {
-                return _obj.IsDBNull(i);
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<bool> f = delegate
-                {
-                    return _objExcel.IsDBNull(i);
-                };
-                return f();
-            }
-        }
-
-
-
-
-
-        public object this[string name]
-        {
-            get
-            {
-                if (_type == AdomdType.AnalysisServices)
-                {
-                    return _obj[name];
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<object> f = delegate
-                    {
-                        return _objExcel[name];
-                    };
-                    return f();
-                }
-            }
-        }
-
-        public object this[int i]
-        {
-            get 
-            {
-                if (_type == AdomdType.AnalysisServices)
-                {
-                    return _obj[i];
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<object> f = delegate
-                    {
-                        return _objExcel[i];
-                    };
-                    return f();
-                }
-            } 
-        }
+        public string GetName(int i) => _obj.GetName(i);
+            
+        public int GetOrdinal(string name) => _obj.GetOrdinal(name);
+            
+        public string GetString(int i) => _obj.GetString(i);
+            
+        public object GetValue(int i) => _obj.GetValue(i);
+            
+        public int GetValues(object[] values) => _obj.GetValues(values);
+            
+        public bool IsDBNull(int i) => _obj.IsDBNull(i);
+            
+        public object this[string name] => _obj[name];
+            
+        public object this[int i] => _obj[i];
 
         public DataTable ConvertToTable(Dictionary<string,string> formats)
         {
@@ -601,17 +133,18 @@ namespace ADOTabular.AdomdClientWrappers
             DataTable dtSchema = this.GetSchemaTable();
             DataTable dt = new DataTable();
             List<DataColumn> listCols = new List<DataColumn>();
+            var invariantCulture = System.Globalization.CultureInfo.InvariantCulture;
 
             if (dtSchema != null)
             {
                 foreach (DataRow drow in dtSchema.Rows)
                 {
-                    string columnName = System.Convert.ToString(drow["ColumnName"]);
+                    string columnName = drow["ColumnName"].ToString();
                     DataColumn column = new DataColumn(columnName, (Type)(drow["DataType"]));
                     //column.Unique = (bool)drow["IsUnique"];
                     //column.AllowDBNull = (bool)drow["AllowDBNull"];
                     //column.AutoIncrement = (bool)drow["IsAutoIncrement"];
-                    if (formats?.ContainsKey(columnName)??false) column.ExtendedProperties.Add("FormatString", string.Format("{{0:{0}}}" + formats[columnName]));
+                    if (formats?.ContainsKey(columnName)??false) column.ExtendedProperties.Add("FormatString", string.Format(invariantCulture, "{{0:{0}}}" + formats[columnName]));
                     listCols.Add(column);
                     dt.Columns.Add(column);
                 }
@@ -624,7 +157,7 @@ namespace ADOTabular.AdomdClientWrappers
                 for (int i = 0; i < listCols.Count; i++)
                 {
                     if (listCols[i].ExtendedProperties.ContainsKey("FormatString"))
-                        dataRow[((DataColumn)listCols[i])] = string.Format(listCols[i].ExtendedProperties["FormatString"].ToString() , this[i]);
+                        dataRow[((DataColumn)listCols[i])] = string.Format(invariantCulture, listCols[i].ExtendedProperties["FormatString"].ToString() , this[i]);
                     else
                         dataRow[((DataColumn)listCols[i])] = this[i];
                 }

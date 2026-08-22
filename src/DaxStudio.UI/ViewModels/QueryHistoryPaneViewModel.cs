@@ -1,31 +1,26 @@
-﻿using System.ComponentModel.Composition;
+using System.ComponentModel.Composition;
 using Caliburn.Micro;
+using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
 using DaxStudio.UI.Model;
-using DaxStudio.UI.Interfaces;
 using System.Windows.Data;
 using System;
 using System.ComponentModel;
+using System.Windows;
+using System.Windows.Media;
 using Serilog;
-using System.Windows.Input;
 using DaxStudio.Interfaces;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace DaxStudio.UI.ViewModels
 {
-
-    //public class QueryHistoryPaneViewModelFactory
-    //{
-    //    [Export(typeof(Func<GlobalQueryHistory,IEventAggregator,DocumentViewModel,QueryHistoryPaneViewModel>))]
-    //    public QueryHistoryPaneViewModel Create(GlobalQueryHistory globalHistory, IEventAggregator eventAggregator, DocumentViewModel document)
-    //    {
-    //        return new QueryHistoryPaneViewModel(globalHistory, eventAggregator,document);
-    //    }
-    //}
 
     [PartCreationPolicy(CreationPolicy.NonShared)]
     [Export]
     public class QueryHistoryPaneViewModel : ToolWindowBase
         , IHandle<DocumentConnectionUpdateEvent>
+        , IHandle<DatabaseChangedEvent>
         , IHandle<UpdateGlobalOptions>
     {
         private bool _isFilteredByServer = true;
@@ -33,8 +28,9 @@ namespace DaxStudio.UI.ViewModels
         private readonly GlobalQueryHistory _globalHistory;
         private readonly ListCollectionView _queryHistory;
         private readonly IEventAggregator _eventAggregator;
-        private readonly DocumentViewModel _currentDocument;
+        //private readonly IConnection _currentConnection;
         private readonly IGlobalOptions _globalOptions;
+        private readonly DocumentViewModel CurrentDocument;
 
         [ImportingConstructor]
         public QueryHistoryPaneViewModel(GlobalQueryHistory globalHistory, IEventAggregator eventAggregator, DocumentViewModel currentDocument, IGlobalOptions options)
@@ -43,32 +39,25 @@ namespace DaxStudio.UI.ViewModels
             _globalHistory = globalHistory;
             _globalOptions = options;
             _eventAggregator = eventAggregator;
-            _eventAggregator.Subscribe(this);            
+            _eventAggregator.SubscribeOnUIThread(this);            
             _queryHistory = new ListCollectionView(globalHistory.QueryHistory);
             //_queryHistory.PageSize = 50;
-            _currentDocument = currentDocument;
+            CurrentDocument = currentDocument;
             _queryHistory.Filter = HistoryFilter;
             // sort by StartTime Desc by default
             _queryHistory.SortDescriptions.Add(new SortDescription("StartTime", ListSortDirection.Descending));
             Log.Debug("{class} {method} {message}", "QueryHistoryPaneViewModel", "ctor", "end");
         }
 
-        public BindableCollection<QueryHistoryEvent> QueryHistoryList { 
-            get {
-                return _globalHistory.QueryHistory; 
-            } 
-        }
+        public BindableCollection<QueryHistoryEvent> QueryHistoryList => _globalHistory.QueryHistory;
 
-        public override string Title
-        {
-            get { return "Query History"; }
-        }
+        public override string Title => "History";
+        public override string DefaultDockingPane => "DockBottom";
+        public override string ContentId => "query-history";
 
-        public string CurrentServer { get { return _currentDocument.ServerName; } }
-        public string CurrentDatabase { get { return _currentDocument.SelectedDatabase; } }
         public bool IsFilteredByServer
         {
-            get { return _isFilteredByServer; }
+            get => _isFilteredByServer;
             set
             {
                 _isFilteredByServer = value;
@@ -92,28 +81,72 @@ namespace DaxStudio.UI.ViewModels
         private bool HistoryFilter(object queryHistoryEvent)
         {
             var qhe = queryHistoryEvent as QueryHistoryEvent;
-            return (string.Compare( qhe.ServerName, _currentDocument.ServerName, true)==0 || !IsFilteredByServer)
-                && (string.Compare(qhe.DatabaseName,  _currentDocument.SelectedDatabase, true) == 0 || !IsFilteredByDatabase);
+            if (qhe == null) return false;
+            try
+            {
+                var conn = CurrentDocument?.Connection;
+                var server = conn?.ServerNameForHistory ?? string.Empty;
+                var database = conn?.Database?.Caption ?? string.Empty;
+                return (string.Equals(qhe.ServerName, server, StringComparison.OrdinalIgnoreCase) || !IsFilteredByServer)
+                    && (string.Equals(qhe.DatabaseName, database, StringComparison.OrdinalIgnoreCase) || !IsFilteredByDatabase);
+            }
+            catch (Exception ex)
+            {
+                // The connection can be in a transient state during a reconnect or
+                // database change (e.g. _dmvConnection has just been reassigned but
+                // not yet re-opened). A throw from this filter would abort the
+                // entire CollectionView.Refresh() pass; instead show the row and
+                // let the next DatabaseChangedEvent re-evaluate the filter once
+                // the connection has stabilised.
+                Log.Warning(ex, Common.Constants.LogMessageTemplate,
+                    nameof(QueryHistoryPaneViewModel), nameof(HistoryFilter),
+                    "Connection in transient state, deferring filter");
+                return true;
+            }
         }
 
-        public ICollectionView QueryHistory
+        public ICollectionView QueryHistory => _queryHistory;
+
+        public QueryHistoryEvent SelectedHistoryItem { get; set; }
+
+        public void QueryHistoryDoubleClick()
         {
-            get { return _queryHistory; }
+            QueryHistoryDoubleClick(SelectedHistoryItem);
         }
-
 
         public void QueryHistoryDoubleClick(QueryHistoryEvent queryHistoryEvent)
         {
-            _eventAggregator.PublishOnUIThread(new SendTextToEditor(queryHistoryEvent.QueryText));
-            //_eventAggregator.PublishOnUIThread(new SendTextToEditor(queryText));
+            if (queryHistoryEvent == null) return;  // exit here silently if no history event is selected
+            if (!string.IsNullOrEmpty(queryHistoryEvent.QueryBuilderJson))
+                _eventAggregator.PublishAsync(new LoadQueryBuilderEvent(queryHistoryEvent.QueryBuilderJson));
+            else
+            {
+                var text = queryHistoryEvent.QueryText;
+                if (!string.IsNullOrWhiteSpace(queryHistoryEvent.Parameters)) text += $"\n{queryHistoryEvent.Parameters}";
+                _eventAggregator.PublishAsync(new SendTextToEditor(text));
+            }
         }
 
-        public void Handle(DocumentConnectionUpdateEvent message)
+        public Task HandleAsync(DocumentConnectionUpdateEvent message, CancellationToken cancellationToken)
         {
-            QueryHistory.Filter = HistoryFilter;
-            QueryHistory.Refresh();
-            NotifyOfPropertyChange(() => CurrentServer);
-            NotifyOfPropertyChange(() => CurrentDatabase);
+            UpdateHistoryFilters();
+            return Task.CompletedTask;
+        }
+
+        private void UpdateHistoryFilters()
+        {
+            try
+            {
+                Application.Current.Dispatcher.Invoke(() => { 
+                    QueryHistory.Filter = HistoryFilter;
+                    QueryHistory.Refresh();
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(QueryHistoryPaneViewModel), nameof(UpdateHistoryFilters), ex.Message);
+                CurrentDocument.OutputWarning("An error occurred while trying to update the filters on the Query History pane due to a connection change");
+            }
         }
 
         public void MouseDoubleClick(object sender)//, MouseButtonEventArgs e)
@@ -123,9 +156,17 @@ namespace DaxStudio.UI.ViewModels
 
         public bool ShowTraceColumns { get { return _globalOptions.QueryHistoryShowTraceColumns; } }
 
-        public void Handle(UpdateGlobalOptions message)
+        public Task HandleAsync(UpdateGlobalOptions message, CancellationToken cancellationToken)
         {
             NotifyOfPropertyChange(() => ShowTraceColumns);
+            return Task.CompletedTask;
         }
+
+        public Task HandleAsync(DatabaseChangedEvent message, CancellationToken cancellationToken)
+        {
+            UpdateHistoryFilters();
+            return Task.CompletedTask;
+        }
+        
     }
 }

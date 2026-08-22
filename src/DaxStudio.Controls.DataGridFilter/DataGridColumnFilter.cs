@@ -1,21 +1,12 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 using System.Collections;
 using DaxStudio.Controls.DataGridFilter.Support;
 using System.Reflection;
 using DaxStudio.Controls.DataGridFilter.Querying;
-using System.ComponentModel;
 using System.Windows.Controls.Primitives;
 
 namespace DaxStudio.Controls.DataGridFilter
@@ -36,7 +27,7 @@ namespace DaxStudio.Controls.DataGridFilter
                 && e.OldValue != e.NewValue
                 && AssignedDataGridColumn != null && DataGrid != null && AssignedDataGridColumn is DataGridColumn)
             {
-                initialize();
+                Initialize();
 
                 FilterCurrentData.IsRefresh = true;//query optimization filed
 
@@ -58,7 +49,7 @@ namespace DaxStudio.Controls.DataGridFilter
         }
 
         public static readonly DependencyProperty FilterCurrentDataProperty =
-            DependencyProperty.Register("FilterCurrentData", typeof(FilterData), typeof(DataGridColumnFilter), new PropertyMetadata(null,OnFilterCurrentDataChanged));
+            DependencyProperty.Register(nameof(FilterCurrentData), typeof(FilterData), typeof(DataGridColumnFilter), new PropertyMetadata(null,OnFilterCurrentDataChanged));
 
         private static void OnFilterCurrentDataChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
         {
@@ -83,11 +74,23 @@ namespace DaxStudio.Controls.DataGridFilter
             {
                 IsFiltered = false;
             }
+
+            // Update the DataGrid's HasActiveFilters property
+            if (DataGrid != null)
+            {
+                DataGridExtensions.SetHasActiveFilters(DataGrid, DataGridExtensions.CheckHasActiveFilters(DataGrid));
+            }
         }
 
         private void FilterClearedEvent(object sender, EventArgs e)
         {
             IsFiltered = false;
+
+            // Update the DataGrid's HasActiveFilters property
+            if (DataGrid != null)
+            {
+                DataGridExtensions.SetHasActiveFilters(DataGrid, DataGridExtensions.CheckHasActiveFilters(DataGrid));
+            }
         }
 
         public DataGridColumnHeader AssignedDataGridColumnHeader
@@ -97,7 +100,7 @@ namespace DaxStudio.Controls.DataGridFilter
         }
 
         public static readonly DependencyProperty AssignedDataGridColumnHeaderProperty =
-            DependencyProperty.Register("AssignedDataGridColumnHeader", typeof(DataGridColumnHeader), typeof(DataGridColumnFilter));
+            DependencyProperty.Register(nameof(AssignedDataGridColumnHeader), typeof(DataGridColumnHeader), typeof(DataGridColumnFilter));
 
         public DataGridColumn AssignedDataGridColumn
         {
@@ -106,7 +109,7 @@ namespace DaxStudio.Controls.DataGridFilter
         }
 
         public static readonly DependencyProperty AssignedDataGridColumnProperty =
-            DependencyProperty.Register("AssignedDataGridColumn", typeof(DataGridColumn), typeof(DataGridColumnFilter));
+            DependencyProperty.Register(nameof(AssignedDataGridColumn), typeof(DataGridColumn), typeof(DataGridColumnFilter));
 
         public DataGrid DataGrid
         {
@@ -115,7 +118,7 @@ namespace DaxStudio.Controls.DataGridFilter
         }
 
         public static readonly DependencyProperty DataGridProperty =
-            DependencyProperty.Register("DataGrid", typeof(DataGrid), typeof(DataGridColumnFilter));
+            DependencyProperty.Register(nameof(DataGrid), typeof(DataGrid), typeof(DataGridColumnFilter));
 
         public IEnumerable DataGridItemsSource
         {
@@ -124,7 +127,7 @@ namespace DaxStudio.Controls.DataGridFilter
         }
 
         public static readonly DependencyProperty DataGridItemsSourceProperty =
-            DependencyProperty.Register("DataGridItemsSource", typeof(IEnumerable), typeof(DataGridColumnFilter));
+            DependencyProperty.Register(nameof(DataGridItemsSource), typeof(IEnumerable), typeof(DataGridColumnFilter));
 
 
         //private bool _isFiltered = false;
@@ -141,7 +144,7 @@ namespace DaxStudio.Controls.DataGridFilter
         }
 
         public static readonly DependencyProperty IsFilteredProperty =
-            DependencyProperty.Register("IsFiltered", typeof(bool), typeof(DataGridColumnFilter));
+            DependencyProperty.Register(nameof(IsFiltered), typeof(bool), typeof(DataGridColumnFilter));
 
         public bool IsFilteringInProgress
         {
@@ -152,7 +155,7 @@ namespace DaxStudio.Controls.DataGridFilter
 
 
         public static readonly DependencyProperty IsFilteringInProgressProperty =
-            DependencyProperty.Register("IsFilteringInProgress", typeof(bool), typeof(DataGridColumnFilter));
+            DependencyProperty.Register(nameof(IsFilteringInProgress), typeof(bool), typeof(DataGridColumnFilter));
 
         public FilterType FilterType { get { return FilterCurrentData != null ? FilterCurrentData.Type : FilterType.Text; } }
 
@@ -163,7 +166,7 @@ namespace DaxStudio.Controls.DataGridFilter
         }
 
         public static readonly DependencyProperty IsTextFilterControlProperty =
-            DependencyProperty.Register("IsTextFilterControl", typeof(bool), typeof(DataGridColumnFilter));
+            DependencyProperty.Register(nameof(IsTextFilterControl), typeof(bool), typeof(DataGridColumnFilter));
 
         public bool IsNumericFilterControl
         {
@@ -221,6 +224,14 @@ namespace DaxStudio.Controls.DataGridFilter
         public static readonly DependencyProperty IsFirstFilterControlProperty =
             DependencyProperty.Register("IsFirstFilterControl", typeof(bool), typeof(DataGridColumnFilter));
 
+        public bool IsLastFilterControl
+        {
+            get { return (bool)GetValue(IsLastFilterControlProperty); }
+            set { SetValue(IsLastFilterControlProperty, value); }
+        }
+        public static readonly DependencyProperty IsLastFilterControlProperty =
+            DependencyProperty.Register("IsLastFilterControl", typeof(bool), typeof(DataGridColumnFilter));
+
         public bool IsControlInitialized
         {
             get { return (bool)GetValue(IsControlInitializedProperty); }
@@ -231,7 +242,7 @@ namespace DaxStudio.Controls.DataGridFilter
         #endregion
 
         #region Initialization
-        private void initialize()
+        private void Initialize()
         {
             if (DataGridItemsSource != null && AssignedDataGridColumn != null && DataGrid != null)
             {
@@ -241,7 +252,7 @@ namespace DaxStudio.Controls.DataGridFilter
 
                 handleListFilterType();
 
-                hookUpCommands();
+                HookUpCommands();
 
                 IsControlInitialized = true;
             }
@@ -251,17 +262,15 @@ namespace DaxStudio.Controls.DataGridFilter
         {
             if (FilterCurrentData == null || !FilterCurrentData.IsTypeInitialized)
             {
-                string valuePropertyBindingPath = getValuePropertyBindingPath(AssignedDataGridColumn);
+                string valuePropertyBindingPath = GetValuePropertyBindingPath(AssignedDataGridColumn);
 
-                bool typeInitialized;
+                Type valuePropertyType = GetValuePropertyType(
+                    valuePropertyBindingPath, GetItemSourceElementType(out var typeInitialized));
 
-                Type valuePropertyType = getValuePropertyType(
-                    valuePropertyBindingPath, getItemSourceElementType(out typeInitialized));
-
-                FilterType filterType = getFilterType(
+                FilterType filterType = GetFilterType(
                     valuePropertyType, 
-                    isComboDataGridColumn(),
-                    isBetweenType());
+                    IsComboDataGridColumn(),
+                    IsBetweenType());
 
                 FilterOperator filterOperator = FilterOperator.Undefined;
 
@@ -284,7 +293,7 @@ namespace DaxStudio.Controls.DataGridFilter
         private void initControlType()
         {
             IsFirstFilterControl    = false;
-
+            IsLastFilterControl     = false;
             IsTextFilterControl     = false;
             IsNumericFilterControl  = false;
             IsBooleanFilterControl  = false;
@@ -420,7 +429,7 @@ namespace DaxStudio.Controls.DataGridFilter
             }
         }
 
-        private string getValuePropertyBindingPath(DataGridColumn column)
+        private static string GetValuePropertyBindingPath(DataGridColumn column)
         {
             string path = (string)column.GetValue(DataGridColumnExtensions.CustomBindingPathProperty);
 
@@ -490,7 +499,7 @@ namespace DaxStudio.Controls.DataGridFilter
             return path;
         }
 
-        private Type getValuePropertyType(string path, Type elementType)
+        private static Type GetValuePropertyType(string path, Type elementType)
         {
             Type type = typeof(object);
 
@@ -527,7 +536,7 @@ namespace DaxStudio.Controls.DataGridFilter
             return type;
         }
 
-        private Type getItemSourceElementType(out bool typeInitialized)
+        private Type GetItemSourceElementType(out bool typeInitialized)
         {
             typeInitialized = false;
 
@@ -578,7 +587,7 @@ namespace DaxStudio.Controls.DataGridFilter
             return elementType;
         }
 
-        private FilterType getFilterType(
+        private static FilterType GetFilterType(
             Type valuePropertyType, 
             bool isAssignedDataGridColumnComboDataGridColumn,
             bool isBetweenType)
@@ -589,63 +598,63 @@ namespace DaxStudio.Controls.DataGridFilter
             {
                 filterType = FilterType.List;
             }
-            else if (valuePropertyType == typeof(Boolean) || valuePropertyType == typeof(Nullable<Boolean>))
+            else if (valuePropertyType == typeof(Boolean) || valuePropertyType == typeof(bool?))
             {
                 filterType = FilterType.Boolean;
             }
-            else if (valuePropertyType == typeof(SByte) || valuePropertyType == typeof(Nullable<SByte>))
+            else if (valuePropertyType == typeof(SByte) || valuePropertyType == typeof(sbyte?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Byte) || valuePropertyType == typeof(Nullable<Byte>))
+            else if (valuePropertyType == typeof(Byte) || valuePropertyType == typeof(byte?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Int16) || valuePropertyType == typeof(Nullable<Int16>))
+            else if (valuePropertyType == typeof(Int16) || valuePropertyType == typeof(short?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(UInt16) || valuePropertyType == typeof(Nullable<UInt16>))
+            else if (valuePropertyType == typeof(UInt16) || valuePropertyType == typeof(ushort?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Int32) || valuePropertyType == typeof(Nullable<Int32>))
+            else if (valuePropertyType == typeof(Int32) || valuePropertyType == typeof(int?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(UInt32) || valuePropertyType == typeof(Nullable<UInt32>))
+            else if (valuePropertyType == typeof(UInt32) || valuePropertyType == typeof(uint?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Int64) || valuePropertyType == typeof(Nullable<Int64>))
+            else if (valuePropertyType == typeof(Int64) || valuePropertyType == typeof(long?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Single) || valuePropertyType == typeof(Nullable<Single>))
+            else if (valuePropertyType == typeof(Single) || valuePropertyType == typeof(float?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Int64) || valuePropertyType == typeof(Nullable<Int64>))
+            else if (valuePropertyType == typeof(Int64) || valuePropertyType == typeof(long?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Decimal) || valuePropertyType == typeof(Nullable<Decimal>))
+            else if (valuePropertyType == typeof(Decimal) || valuePropertyType == typeof(decimal?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(float) || valuePropertyType == typeof(Nullable<float>))
+            else if (valuePropertyType == typeof(float) || valuePropertyType == typeof(float?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Double) || valuePropertyType == typeof(Nullable<Double>))
+            else if (valuePropertyType == typeof(Double) || valuePropertyType == typeof(double?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(Int64) || valuePropertyType == typeof(Nullable<Int64>))
+            else if (valuePropertyType == typeof(Int64) || valuePropertyType == typeof(long?))
             {
                 filterType = FilterType.Numeric;
             }
-            else if (valuePropertyType == typeof(DateTime) || valuePropertyType == typeof(Nullable<DateTime>))
+            else if (valuePropertyType == typeof(DateTime) || valuePropertyType == typeof(DateTime?))
             {
                 filterType = FilterType.DateTime;
             }
@@ -666,22 +675,22 @@ namespace DaxStudio.Controls.DataGridFilter
             return filterType;
         }
 
-        private bool isComboDataGridColumn()
+        private bool IsComboDataGridColumn()
         {
             return AssignedDataGridColumn is DataGridComboBoxColumn;
         }
 
-        private bool isBetweenType()
+        private bool IsBetweenType()
         {
             return DataGridColumnExtensions.GetIsBetweenFilterControl(AssignedDataGridColumn);
         }
 
-        private void hookUpCommands()
+        private void HookUpCommands()
         {
             if (DataGridExtensions.GetClearFilterCommand(DataGrid) == null)
             {
                 DataGridExtensions.SetClearFilterCommand(
-                    DataGrid, new DataGridFilterCommand(clearQuery));
+                    DataGrid, new DataGridFilterCommand(ClearQuery));
             }
         }
         #endregion
@@ -694,15 +703,16 @@ namespace DaxStudio.Controls.DataGridFilter
                 QueryController query = QueryControllerFactory.GetQueryController(
                     DataGrid, FilterCurrentData, DataGridItemsSource);
 
-                addFilterStateHandlers(query);
+                AddFilterStateHandlers(query);
 
                 query.DoQuery();
 
                 IsFirstFilterControl = query.IsCurentControlFirstControl;
+                
             }
         }
 
-        private void clearQuery(object parameter)
+        private void ClearQuery(object parameter)
         {
             if (DataGrid != null)
             {
@@ -713,7 +723,7 @@ namespace DaxStudio.Controls.DataGridFilter
             }
         }
 
-        private void addFilterStateHandlers(QueryController query)
+        private void AddFilterStateHandlers(QueryController query)
         {
             query.FilteringStarted -= new EventHandler<EventArgs>(query_FilteringStarted);
             query.FilteringFinished -= new EventHandler<EventArgs>(query_FilteringFinished);

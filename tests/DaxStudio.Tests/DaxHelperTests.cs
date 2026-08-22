@@ -1,11 +1,7 @@
-﻿using DaxStudio.UI.Model;
-using DaxStudio.UI.Utils;
+﻿using DaxStudio.Tests.Assertions;
+using DaxStudio.Core.Model;
+using DaxStudio.UI.Model;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace DaxStudio.Tests
 {
@@ -19,7 +15,7 @@ namespace DaxStudio.Tests
             var mockEventAgg = new Mocks.MockEventAggregator();
             var queryInfo = new QueryInfo(qry, mockEventAgg);
             
-            Assert.AreEqual(1, queryInfo.Parameters.Count);
+            Assert.HasCount(1, queryInfo.Parameters);
             Assert.AreEqual("param", queryInfo.Parameters["param"].Name);
         }
 
@@ -32,7 +28,7 @@ namespace DaxStudio.Tests
             var mockEventAgg = new Mocks.MockEventAggregator();
             var queryInfo = new QueryInfo(qry, mockEventAgg);
 
-            Assert.AreEqual(1, queryInfo.Parameters.Count);
+            Assert.HasCount(1, queryInfo.Parameters);
             Assert.AreEqual("param2", queryInfo.Parameters["param2"].Name);
         }
 
@@ -48,9 +44,44 @@ namespace DaxStudio.Tests
             var mockEventAgg = new Mocks.MockEventAggregator();
             var queryInfo = new QueryInfo(qry, mockEventAgg);
 
-            Assert.AreEqual(1, queryInfo.Parameters.Count);
+            Assert.HasCount(1, queryInfo.Parameters);
             Assert.AreEqual("param3", queryInfo.Parameters["param3"].Name);
         }
+
+        [TestMethod]
+        public void TestCommentedXmlParameters()
+        {
+            string qry = "/* " +
+                "* FILTER(table, column = @param1)\n" +
+                "*/" +
+                "EVALUTE\n" +
+                "-- FILTER(table, column = @param2)\n" +
+                 "IF(LEN(@param3)>0\n" +
+                 ",FILTER(table, column = @param3))\n" +
+                 "<Parameters>\n" +
+                 "<Parameter>\n" +
+                 "<Name>param3</Name>\n" +
+                 "<Value>value3</Value>\n" +
+                 "</Parameter>\n" +
+                 "</Parameters>\n";
+            var mockEventAgg = new Mocks.MockEventAggregator();
+            var queryInfo = new QueryInfo(qry, mockEventAgg);
+
+            string expectedQry = "/* " +
+                "* FILTER(table, column = @param1)\n" +
+                "*/" +
+                "EVALUTE\n" +
+                "-- FILTER(table, column = @param2)\n" +
+                "IF(LEN(\"value3\")>0\n" +
+                 ",FILTER(table, column = \"value3\"))";
+
+            Assert.HasCount(1, queryInfo.Parameters);
+            Assert.AreEqual("param3", queryInfo.Parameters["param3"].Name);
+            StringAssertion.ShouldEqualWithDiff(expectedQry, queryInfo.QueryWithMergedParameters,DiffStyle.Full);
+            
+        }
+
+
 
     }
 }

@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Interactivity;
+using Microsoft.Xaml.Behaviors;
 using System.ComponentModel;
 
 namespace DaxStudio.UI.Triggers
@@ -62,7 +62,6 @@ namespace DaxStudio.UI.Triggers
 
         private void OnKeyPress(object sender, KeyEventArgs args)
         {
-            args.Handled = false;
             if (args.Key.Equals(TriggerValue))
             {
                 args.Handled = true;

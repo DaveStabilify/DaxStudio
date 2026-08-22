@@ -1,0 +1,29 @@
+﻿<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:shell="clr-namespace:Microsoft.Windows.Shell;assembly=AvalonDock"
+    xmlns:avalonDock="https://github.com/Dirkster99/AvalonDock"
+    xmlns:avalonDockLayout="https://github.com/Dirkster99/AvalonDock"
+    xmlns:avalonDockControls="https://github.com/Dirkster99/AvalonDock"
+    xmlns:avalonDockConverters="https://github.com/Dirkster99/AvalonDock"
+    xmlns:avalonDockProperties="clr-namespace:AvalonDock.Properties;assembly=AvalonDock"
+    >
+
+    <!-- Colors  -->
+    
+    <Color x:Key="AvalonDock.Border.Background.Color">#000000</Color>
+    <Color x:Key="AvalonDock.Control.Background.Color">#000000</Color>
+    <Color x:Key="AvalonDock.Transparent.Color">#00FFFFFF</Color>
+    <Color x:Key="AvalonDock.Text.Color">#00CCCCCC</Color>
+
+    <SolidColorBrush x:Key="AvalonDock.Transparent.Brush" Color="{StaticResource AvalonDock.Transparent.Color}"/>
+    <SolidColorBrush x:Key="AvalonDock.Border.Background.Brush" Color="{StaticResource AvalonDock.Border.Background.Color}"/>
+    <SolidColorBrush x:Key="AvalonDock.Control.Background.Brush" Color="{StaticResource AvalonDock.Control.Background.Color}"/>
+    <SolidColorBrush x:Key="AvalonDock.DisabledText.Brush" Color="{x:Static SystemColors.GrayTextColor}"></SolidColorBrush>
+    <SolidColorBrush x:Key="AvalonDock.Text.Brush" Color="{StaticResource AvalonDock.Text.Color}"/>
+    <!--<SolidColorBrush x:Key="AvalonDock.Text.Brush" Color="{x:Static SystemColors.ControlTextColor}"/>-->
+    <SolidColorBrush x:Key="AvalonDock.Highlight.Brush" Color="{x:Static SystemColors.HighlightColor}"/>
+    <SolidColorBrush x:Key="AvalonDock.HighlightText.Brush" Color="{x:Static SystemColors.HighlightTextColor}"/>
+    
+
+</ResourceDictionary>

@@ -1,515 +1,104 @@
-﻿using System.Collections.Generic;
+using System;
 using System.ComponentModel.Composition;
-using Caliburn.Micro;
-using DaxStudio.UI.Events;
-using System.Linq;
-using System.Text.RegularExpressions;
+using System.Globalization;
 using System.IO;
-using Newtonsoft.Json;
+using System.IO.Packaging;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Markup;
+using System.Windows.Media;
+using Caliburn.Micro;
+using DaxStudio.Common;
+using DaxStudio.Common.Enums;
+using DaxStudio.Core;
+using DaxStudio.Core.Events;
+using DaxStudio.Core.Trace;
+using DaxStudio.Interfaces;
+using DaxStudio.Parsers;
+using DaxStudio.UI.Events;
+using DaxStudio.UI.Extensions;
 using DaxStudio.UI.Interfaces;
 using DaxStudio.UI.Model;
-using DaxStudio.QueryTrace;
-using DaxStudio.Interfaces;
+using DaxStudio.UI.Utils;
+using DaxStudio.UI.Views;
 using Serilog;
-using Newtonsoft.Json.Linq;
-using System.Text;
-using DaxStudio.UI.JsonConverters;
 
 namespace DaxStudio.UI.ViewModels
 {
 
-    public class TraceStorageEngineEvent {
-        public DaxStudioTraceEventClass Class;
-        public DaxStudioTraceEventSubclass Subclass;
-        [JsonIgnore]
-        public DaxStudioTraceEventClassSubclass ClassSubclass {
-            get {
-                return new DaxStudioTraceEventClassSubclass { Class = this.Class, Subclass = this.Subclass };
-            }
-        }
-        public string Query { get;  set; }
-        public long? Duration { get;  set; }
-        public long? CpuTime { get;  set; }
-        public int RowNumber { get;  set; }
-        public long? EstimatedRows { get; set; }
-        public long? EstimatedKBytes { get; set; }
-        public bool HighlightQuery { get; set; }
-
-        // String that highlight important parts of the query
-        // Currently implement only the strong (~E~/~S~) for CallbackDataID and EncodeCallback function s
-        private string _queryRichText = "";
-        public string QueryRichText {
-            set {
-                var sb = new StringBuilder(value);
-                sb.Replace("CallbackDataID", "|~S~|CallbackDataID|~E~|");
-                sb.Replace("EncodeCallback", "|~S~|EncodeCallback|~E~|");
-                _queryRichText = sb.ToString();
-            }
-
-            get {
-                return _queryRichText;
-            }
-        }
-
-        public TraceStorageEngineEvent(DaxStudioTraceEventArgs ev, int rowNumber)
-        {
-            RowNumber = rowNumber;
-            Class = ev.EventClass;
-            Subclass = ev.EventSubclass;
-            switch (Class)
-            {
-                //case DaxStudioTraceEventClass.DirectQueryEnd:
-                //    Query = ev.TextData;
-                //    break;
-                case DaxStudioTraceEventClass.AggregateTableRewriteQuery:
-                    // the rewrite event does not have a query or storage engine timings
-                    break;
-                case DaxStudioTraceEventClass.DirectQueryBegin:
-                case DaxStudioTraceEventClass.DirectQueryEnd:
-                    // Don't process DirectQuery text
-                    Query = ev.TextData;
-                    QueryRichText = Query;
-                    break;
-                default:
-                    // TODO: we should implement as optional the removal of aliases and lineage
-                    Query = ev.TextData.RemoveDaxGuids().RemoveXmSqlSquareBrackets().RemoveAlias().RemoveLineage().FixEmptyArguments().RemoveRowNumberGuid();
-                    QueryRichText = Query;
-                    // Set flag in case any highlight is present
-                    HighlightQuery = QueryRichText.Contains("|~E~|");
-                    break;
-            }
-            
-            // Skip Duration/Cpu Time for Cache Match
-            if (ClassSubclass.Subclass != DaxStudioTraceEventSubclass.VertiPaqCacheExactMatch)
-            {
-                Duration = ev.Duration;
-                if (ClassSubclass.Subclass != DaxStudioTraceEventSubclass.RewriteAttempted) CpuTime = ev.CpuTime;
-            }
-            if (Query != null && Query?.Length > 0)
-            {
-                long rows, bytes;
-                if (Query.ExtractEstimatedSize(out rows, out bytes))
-                {
-                    EstimatedRows = rows;
-                    EstimatedKBytes = 1 + bytes / 1024;
-                }
-            }
-        }
-        public TraceStorageEngineEvent() { }
-    }
-
-    public class RewriteTraceEngineEvent : TraceStorageEngineEvent
-    {
-
-        public RewriteTraceEngineEvent() { }
-
-        public RewriteTraceEngineEvent(DaxStudioTraceEventArgs ev, int rowNumber) : base(ev, rowNumber) {
-            TextData = ev.TextData;
-        }
-        
-        public string Table { get; set; }
-        public string MatchingResult { get; set; }
-        public string Mapping { get; set; }
-        private string _textData;
-        public string TextData { get { return _textData; } set {
-                _textData = value;
-                if (_textData == null) return;
-                JObject rewriteResult = JObject.Parse(_textData);
-                Table = (string)rewriteResult["table"];
-                MatchingResult = (string)rewriteResult["matchingResult"];
-                var mapping = rewriteResult["mapping"];
-                if (mapping.HasValues)
-                    Mapping = (string)rewriteResult["mapping"]["table"];
-                Query = $"<{MatchingResult}>";
-            }
-        }
-        public new string Query { get; set; } = "";
-        public bool MatchFound { get { return MatchingResult == "matchFound"; } }
-
-    }
-
-    public static class TraceStorageEngineExtensions {
-        const string searchGuid = @"([_-]\{?([0-9a-fA-F]){8}-([0-9a-fA-F]){4}-([0-9a-fA-F]){4}-([0-9a-fA-F]){4}-([0-9a-fA-F]){12}\}?)";
-        //const string searchXmSqlSquareBracketsNoSpace = @"(?<![\.'])\[([^\[^ ])*\]";
-        const string searchXmSqlSquareBracketsWithSpace = @"(?<![\.0-9a-zA-Z'])\[([^\[])*\]";
-        const string searchXmSqlDotSeparator = @"\.\[";
-        const string searchXmSqlParenthesis = @"\ *[\(\)]\ *";
-        const string searchXmSqlAlias = @" AS[\r\n\t\s]?\'[^\']*\'";
-        // const string searchXmSqlLineage = @" \( [0-9]+ \) ";
-        const string searchXmSqlLineageBracket = @" \( [0-9]+ \) \]";
-        const string searchXmSqlLineageQuoted = @" \( [0-9]+ \) \'";
-        const string searchXmSqlLineageDollar = @" \( [0-9]+ \) \$";
-        const string searchXmSqlEmptyArguments = @" \(\s*\) ";
-        const string searchXmSqlRowNumberGuidBracket = @"\[RowNumber [0-9A-F ]*\]";
-        const string searchXmSqlRowNumberGuidQuoted = @"\$RowNumber [0-9A-F ]*\'";
-
-        const string searchXmSqlPatternSize = @"Estimated size .* : (?<rows>\d+), (?<bytes>\d+)";
-
-        //const string searchDaxQueryPlanSquareBrackets = @"^\'\[([^\[^ ])*\]";
-        //const string searchQuotedIdentifiers = @"\'([^ ])*\'";
-
-        static Regex guidRemoval = new Regex(searchGuid, RegexOptions.Compiled);
-        static Regex xmSqlSquareBracketsWithSpaceRemoval = new Regex(searchXmSqlSquareBracketsWithSpace, RegexOptions.Compiled);
-        //static Regex xmSqlSquareBracketsNoSpaceRemoval = new Regex(searchXmSqlSquareBracketsNoSpace, RegexOptions.Compiled);
-        static Regex xmSqlDotSeparator = new Regex(searchXmSqlDotSeparator, RegexOptions.Compiled);
-        static Regex xmSqlParenthesis = new Regex(searchXmSqlParenthesis, RegexOptions.Compiled);
-        static Regex xmSqlAliasRemoval = new Regex(searchXmSqlAlias, RegexOptions.Compiled);
-        static Regex xmSqlLineageBracketRemoval = new Regex(searchXmSqlLineageBracket, RegexOptions.Compiled);
-        static Regex xmSqlLineageQuotedRemoval = new Regex(searchXmSqlLineageQuoted, RegexOptions.Compiled);
-        static Regex xmSqlLineageDollarRemoval = new Regex(searchXmSqlLineageDollar, RegexOptions.Compiled);
-        static Regex xmSqlEmptyArguments = new Regex(searchXmSqlEmptyArguments, RegexOptions.Compiled);
-        static Regex xmSqlRowNumberGuidBracketRemoval = new Regex(searchXmSqlRowNumberGuidBracket, RegexOptions.Compiled);
-        static Regex xmSqlRowNumberGuidQuotedRemoval = new Regex(searchXmSqlRowNumberGuidQuoted, RegexOptions.Compiled);
-
-        static Regex xmSqlPatternSize = new Regex(searchXmSqlPatternSize, RegexOptions.Compiled);
-
-        public static string RemoveDaxGuids(this string daxQuery) {
-            return guidRemoval.Replace(daxQuery, "");
-        }
-        private static string RemoveSquareBracketsWithSpace(Match match) {
-            return match.Value.Replace("[", "'").Replace("]", "'");
-        }
-        private static string RemoveSquareBracketsNoSpace(Match match) {
-            return match.Value.Replace("[", "").Replace("]", "");
-        }
-        private static string FixSpaceParenthesis(Match match) {
-            string parenthesis = match.Value.Trim();
-            return " " + parenthesis + " ";
-        }
-        public static string RemoveAlias(this string xmSqlQuery) {
-            return xmSqlAliasRemoval.Replace(xmSqlQuery, "");
-        }
-        public static string RemoveLineage(this string xmSqlQuery) {
-            string s = xmSqlLineageBracketRemoval.Replace(xmSqlQuery, "]");
-            s = xmSqlLineageQuotedRemoval.Replace(s, "'");
-            s = xmSqlLineageDollarRemoval.Replace(s, "$");
-            return s;
-        }
-        public static string FixEmptyArguments(this string xmSqlQuery) {
-            return xmSqlEmptyArguments.Replace(xmSqlQuery, " () ");
-        }
-        public static string RemoveRowNumberGuid(this string xmSqlQuery) {
-            string s = xmSqlRowNumberGuidBracketRemoval.Replace(xmSqlQuery, "[RowNumber]");
-            s = xmSqlRowNumberGuidQuotedRemoval.Replace(s, "$RowNumber'");
-            return s;
-        }
-
-        public static string RemoveXmSqlSquareBrackets(this string daxQuery) {
-            // Reviewed on 2017-10-13
-            // The first removal should be useless and I commented it.
-            // Code was originally written on a plane offline... 
-            // string daxQueryNoBracketsOnTableNames = xmSqlSquareBracketsNoSpaceRemoval.Replace(
-            //             daxQuery,
-            //             RemoveSquareBracketsNoSpace
-            //        );
-            string daxQueryNoBrackets = xmSqlSquareBracketsWithSpaceRemoval.Replace(
-                            daxQuery,  // daxQueryNoBracketsOnTableNames,
-                            RemoveSquareBracketsWithSpace);
-            string daxQueryNoDots = xmSqlDotSeparator.Replace(daxQueryNoBrackets, "[");
-            string result = xmSqlParenthesis.Replace(daxQueryNoDots, FixSpaceParenthesis);
-            return result;
-        }
-
-        public static bool ExtractEstimatedSize(this string daxQuery, out long rows, out long bytes) {
-            var m = xmSqlPatternSize.Match(daxQuery);
-            string rowsString = m.Groups["rows"].Value;
-            string bytesString = m.Groups["bytes"].Value;
-            bool foundRows = long.TryParse(rowsString, out rows);
-            bool foundBytes = long.TryParse(bytesString, out bytes);
-            return foundRows && foundBytes;
-        }
-    }
-
-    //[Export(typeof(ITraceWatcher)),PartCreationPolicy(CreationPolicy.NonShared)]
-    class ServerTimesViewModel
-        : TraceWatcherBaseViewModel, ISaveState
-        
+    public class ServerTimesViewModel
+        : ServerTimesModel
+            , ISaveState
+            , IServerTimes
+            , ITraceDiagnostics
+            , IViewAware
+            , IZoomable
+            , IHandle<ThemeChangedEvent>
+            , IHandle<CopySEQueryEvent>
+            , IHandle<CopyPasteServerTimingsEvent>
+            , IHaveData
     {
         [ImportingConstructor]
-        public ServerTimesViewModel(IEventAggregator eventAggregator, IGlobalOptions globalOptions, ServerTimingDetailsViewModel serverTimingDetails) : base(eventAggregator, globalOptions)
+        public ServerTimesViewModel(IEventAggregator eventAggregator, ServerTimingDetailsViewModel serverTimingDetails
+            , IGlobalOptions options, IWindowManager windowManager) : base(eventAggregator, serverTimingDetails, options, windowManager)
         {
-            _storageEngineEvents = new BindableCollection<TraceStorageEngineEvent>();
-            ServerTimingDetails = serverTimingDetails;
-            //ServerTimingDetails.PropertyChanged += ServerTimingDetails_PropertyChanged;
+            this.ViewAttached += ServerTimesViewModel_ViewAttached;
         }
 
-        #region Tooltip properties
-        public string TotalTooltip => "The total server side duration of the query";
-        public string FETooltip => "Formula Engine (FE) Duration";
-        public string SETooltip => "Storage Engine (SE) Duration";
-        public string SECpuTooltip => "Storage Engine CPU Duration";
-        public string SEQueriesTooltip => "The number of queries sent to the Storage Engine while processing this query";
-        public string SECacheTooltip => "The number of queries sent to the Storage Engine that were answered from the SE Cache";
+        #region IZoomable
+        public event EventHandler OnScaleChanged;
+        private double _scale = 1;
+        public double Scale
+        {
+            get => _scale;
+            set
+            {
+                _scale = value;
+                NotifyOfPropertyChange();
+                OnScaleChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
         #endregion
 
-        protected override List<DaxStudioTraceEventClass> GetMonitoredEvents()
+        private void ServerTimesViewModel_ViewAttached(object sender, ViewAttachedEventArgs e)
         {
-            //return new List<TraceEventClass> 
-            //    { TraceEventClass.QuerySubcube
-            //    , TraceEventClass.VertiPaqSEQueryEnd
-            //    , TraceEventClass.VertiPaqSEQueryCacheMatch
-            //    , TraceEventClass.QueryEnd };
+            var view = e.View as ServerTimesView;
+            if (view == null) return;
 
-            return new List<DaxStudioTraceEventClass>
-                { DaxStudioTraceEventClass.QuerySubcube
-                , DaxStudioTraceEventClass.VertiPaqSEQueryEnd
-                , DaxStudioTraceEventClass.VertiPaqSEQueryCacheMatch
-                , DaxStudioTraceEventClass.AggregateTableRewriteQuery
-                , DaxStudioTraceEventClass.DirectQueryEnd
-                , DaxStudioTraceEventClass.QueryBegin
-                , DaxStudioTraceEventClass.QueryEnd};
+            DataObject.AddCopyingHandler(view.EventDetails, OnCopyEventDetails);
         }
 
-        // This method is called after the WaitForEvent is seen (usually the QueryEnd event)
-        // This is where you can do any processing of the events before displaying them to the UI
-        protected override void ProcessResults() {
-            //FormulaEngineDuration = 0;
-            //StorageEngineDuration = 0;
-            //TotalCpuDuration = 0;
-            //StorageEngineCpu = 0;
-            //StorageEngineQueryCount = 0;
-            //VertipaqCacheMatches = 0;
-            //TotalDuration = 0;
-            //_storageEngineEvents.Clear();
-            ClearAll();
-
-            if (Events != null) {
-                foreach (var traceEvent in Events) {
-                    if (traceEvent.EventClass == DaxStudioTraceEventClass.VertiPaqSEQueryEnd) {
-                        if (traceEvent.EventSubclass == DaxStudioTraceEventSubclass.VertiPaqScan) {
-                            StorageEngineDuration += traceEvent.Duration;
-                            StorageEngineCpu += traceEvent.CpuTime;
-                            StorageEngineQueryCount++;
-                        }
-                        _storageEngineEvents.Add(new TraceStorageEngineEvent(traceEvent, _storageEngineEvents.Count() + 1));
-                    }
-
-                    if (traceEvent.EventClass == DaxStudioTraceEventClass.DirectQueryEnd) {
-                        StorageEngineDuration += traceEvent.Duration;
-                        StorageEngineCpu += traceEvent.CpuTime;
-                        StorageEngineQueryCount++;
-                        _storageEngineEvents.Add(new TraceStorageEngineEvent(traceEvent, _storageEngineEvents.Count() + 1));
-                    }
-
-                    if (traceEvent.EventClass == DaxStudioTraceEventClass.AggregateTableRewriteQuery)
-                    {
-                        //StorageEngineDuration += traceEvent.Duration;
-                        //StorageEngineCpu += traceEvent.CpuTime;
-                        //StorageEngineQueryCount++;
-                        _storageEngineEvents.Add(new RewriteTraceEngineEvent(traceEvent, _storageEngineEvents.Count() + 1));
-                    }
-
-                    if (traceEvent.EventClass == DaxStudioTraceEventClass.QueryEnd) {
-                        TotalDuration = traceEvent.Duration;
-                        TotalCpuDuration = traceEvent.CpuTime;
-                        //FormulaEngineDuration = traceEvent.CpuTime;
-
-                    }
-                    if (traceEvent.EventClass == DaxStudioTraceEventClass.VertiPaqSEQueryCacheMatch) {
-                        VertipaqCacheMatches++;
-                        _storageEngineEvents.Add(new TraceStorageEngineEvent(traceEvent, _storageEngineEvents.Count() + 1));
-                    }
-                }
-
-                FormulaEngineDuration = TotalDuration - StorageEngineDuration;
-                if (QueryHistoryEvent != null) {
-                    QueryHistoryEvent.FEDurationMs = FormulaEngineDuration;
-                    QueryHistoryEvent.SEDurationMs = StorageEngineDuration;
-                    QueryHistoryEvent.ServerDurationMs = TotalDuration;
-
-                    _eventAggregator.PublishOnUIThread(QueryHistoryEvent);
-                }
-                Events.Clear();
-
-                NotifyOfPropertyChange(() => StorageEngineEvents);
-            }
-        }
-
-        private long _totalCpuDuration = 0;
-        public long TotalCpuDuration { 
-            get { return _totalCpuDuration; } 
-            set { _totalCpuDuration = value;
-            NotifyOfPropertyChange(() => TotalCpuDuration);
-            NotifyOfPropertyChange(() => TotalCpuFactor);
-            } 
-        }
-
-        public double TotalCpuFactor
+        private void OnCopyEventDetails(object sender, DataObjectCopyingEventArgs e)
         {
-            get { return (double)_totalCpuDuration / (double)_totalDuration; }
-        }
-
-        public double StorageEngineCpuFactor
-        {
-            get { return _storageEngineDuration==0 ? 0 : (double)_storageEngineCpu / (double)_storageEngineDuration; }
-        }
-        public double StorageEngineDurationPercentage {
-            get
-            {
-                return TotalDuration == 0? 0: (double)StorageEngineDuration / (double)TotalDuration;
-            }
-        }
-        public double FormulaEngineDurationPercentage {
-            // marcorusso: we use the formula engine total provided by Query End event in CPU Time
-            // get { return TotalDuration == 0 ? 0:(TotalDuration-StorageEngineDuration)/TotalDuration;}
-            get {
-                return TotalDuration == 0 ? 0 : (double)FormulaEngineDuration / (double)TotalDuration;
-            }
-        }
-        public double VertipaqCacheMatchesPercentage {
-            get {
-                return StorageEngineQueryCount == 0 ? 0 : (double)VertipaqCacheMatches / (double)StorageEngineQueryCount;
-            }
-        }
-        private long _totalDuration = 0;
-        public long TotalDuration { get { return _totalDuration; }
-            private set { _totalDuration = value;
-            NotifyOfPropertyChange(() => TotalDuration);
-            NotifyOfPropertyChange(() => StorageEngineDurationPercentage);
-            NotifyOfPropertyChange(() => FormulaEngineDurationPercentage);
-            NotifyOfPropertyChange(() => VertipaqCacheMatchesPercentage);
-            NotifyOfPropertyChange(() => TotalCpuFactor);
-            }
-        }
-        private long _formulaEngineDuration = 0;
-        public long FormulaEngineDuration { get { return _formulaEngineDuration; }
-            private set { _formulaEngineDuration = value;
-                NotifyOfPropertyChange(() => FormulaEngineDuration);
-                NotifyOfPropertyChange(() => FormulaEngineDurationPercentage);
-            }
-        }
-        private long _storageEngineDuration = 0;
-        public long StorageEngineDuration { get { return _storageEngineDuration; }
-            private set {
-                _storageEngineDuration = value;
-                NotifyOfPropertyChange(() => StorageEngineDuration);
-                NotifyOfPropertyChange(() => StorageEngineDurationPercentage);
-                NotifyOfPropertyChange(() => StorageEngineCpuFactor);
-            }
-        }
-        private long _storageEngineCpu = 0;
-        public long StorageEngineCpu { get { return _storageEngineCpu; }
-            private set {
-                _storageEngineCpu = value;
-                NotifyOfPropertyChange(() => StorageEngineCpu);
-                NotifyOfPropertyChange(() => StorageEngineCpuFactor);
-            }
-        }
-        private long _storageEngineQueryCount = 0;
-        public long StorageEngineQueryCount { get { return _storageEngineQueryCount; }
-            private set {
-                _storageEngineQueryCount = value;
-                NotifyOfPropertyChange(() => StorageEngineQueryCount);
-            }
-        }
-
-        private int _vertipaqCacheMatches = 0;
-        public int VertipaqCacheMatches { get { return _vertipaqCacheMatches; } 
-            set {
-                _vertipaqCacheMatches = value;
-                NotifyOfPropertyChange(() => VertipaqCacheMatches);
-                NotifyOfPropertyChange(() => VertipaqCacheMatchesPercentage);
-            }
-        }
- 
-        private readonly BindableCollection<TraceStorageEngineEvent> _storageEngineEvents;
-
-        public IObservableCollection<TraceStorageEngineEvent> StorageEngineEvents 
-        {
-            get {
-                var fse = from e in _storageEngineEvents
-                          where
-                          (e.ClassSubclass.Subclass == DaxStudioTraceEventSubclass.VertiPaqScanInternal && ServerTimingDetails.ShowInternal)
-                          ||
-                          (e.ClassSubclass.Subclass == DaxStudioTraceEventSubclass.BatchVertiPaqScan && ServerTimingDetails.ShowBatch)
-                          ||
-                          (e.ClassSubclass.Subclass == DaxStudioTraceEventSubclass.VertiPaqCacheExactMatch && ServerTimingDetails.ShowCache)
-                          ||
-                          ((e.ClassSubclass.Subclass != DaxStudioTraceEventSubclass.VertiPaqCacheExactMatch
-                              && e.ClassSubclass.Subclass != DaxStudioTraceEventSubclass.VertiPaqScanInternal
-                              && e.ClassSubclass.Subclass != DaxStudioTraceEventSubclass.BatchVertiPaqScan
-                           ) && ServerTimingDetails.ShowScan)
-                           ||
-                           (e.ClassSubclass.Subclass == DaxStudioTraceEventSubclass.RewriteAttempted && ServerTimingDetails.ShowRewriteAttempts)
-                          
-
-
-                          select e;
-                return new BindableCollection<TraceStorageEngineEvent>(fse);
-            }
-        }
-
-        private TraceStorageEngineEvent _selectedEvent;
-        public TraceStorageEngineEvent SelectedEvent {
-            get {
-                return _selectedEvent;
-            }
-            set {
-                _selectedEvent = value;
-                NotifyOfPropertyChange(() => SelectedEvent);
-            }
-        }
-
-        /*
-        // Filter for visualization 
-        private bool _cacheVisible;
-        private bool _internalVisible;
-        private bool _scanVisible = true;
-        public bool CacheVisible {
-            get { return _cacheVisible; }
-            set { _cacheVisible = value; NotifyOfPropertyChange(() => StorageEngineEvents); }
-        }
-        public bool InternalVisible {
-            get { return _internalVisible; }
-            set { _internalVisible = value; NotifyOfPropertyChange(() => StorageEngineEvents); }
-        }
-        public bool ScanVisible 
-        {
-            get { return _scanVisible; }
-            set { _scanVisible = value; NotifyOfPropertyChange(() => StorageEngineEvents); }
-        }
-    */
-
-        // IToolWindow interface
-        public override string Title
-        {
-            get { return "Server Timings"; }
-            set { }
-        }
-
-        public override string ToolTipText
-        {
-            get
-            {
-                return "Runs a server trace to record detailed timing information for performance profiling";
-            }
-            set { }
-        }
-
-        public override void OnReset() {
-            IsBusy = false;
-            Events.Clear();
-            ProcessResults();
+            ClipboardManager.ReplaceLineBreaks(e.DataObject);
         }
 
         #region ISaveState methods
         void ISaveState.Save(string filename)
         {
-            var m = new ServerTimesModel()
-            {
-                FormulaEngineDuration = this.FormulaEngineDuration,
-                StorageEngineDuration = this.StorageEngineDuration,
-                StorageEngineCpu = this.StorageEngineCpu,
-                TotalDuration = this.TotalDuration,
-                VertipaqCacheMatches = this.VertipaqCacheMatches,
-                StorageEngineQueryCount = this.StorageEngineQueryCount,                
-                StoreageEngineEvents =  this._storageEngineEvents,
-                TotalCpuDuration = this.TotalCpuDuration
-            };
-            var json = JsonConvert.SerializeObject(m, Formatting.Indented);
-            File.WriteAllText(filename + ".serverTimings" , json);
+            string json = GetJson();
+            File.WriteAllText(filename + ".serverTimings", json);
+        }
 
+        public override void SavePackage(Package package)
+        {
+            base.SavePackage(package);
+        }
+
+        public void LoadPackage(Package package)
+        {
+            var uri = PackUriHelper.CreatePartUri(new Uri(DaxxFormat.ServerTimings, UriKind.Relative));
+            if (!package.PartExists(uri)) return;
+            _eventAggregator.PublishAsync(new ShowTraceWindowEvent(this));
+            var part = package.GetPart(uri);
+            using (TextReader tr = new StreamReader(part.GetStream()))
+            {
+                string data = tr.ReadToEnd();
+                LoadJson(data);
+            }
         }
 
         void ISaveState.Load(string filename)
@@ -517,60 +106,23 @@ namespace DaxStudio.UI.ViewModels
             filename = filename + ".serverTimings";
             if (!File.Exists(filename)) return;
 
-            _eventAggregator.PublishOnUIThread(new ShowTraceWindowEvent(this));
+            _eventAggregator.PublishAsync(new ShowTraceWindowEvent(this));
             string data = File.ReadAllText(filename);
 
-            var eventConverter = new ServerTimingConverter();
-            var deseralizeSettings = new JsonSerializerSettings();
-            deseralizeSettings.Converters.Add(eventConverter);
-            deseralizeSettings.TypeNameAssemblyFormat = System.Runtime.Serialization.Formatters.FormatterAssemblyStyle.Simple;
-            deseralizeSettings.TypeNameHandling = TypeNameHandling.Auto;
-
-            ServerTimesModel m = JsonConvert.DeserializeObject<ServerTimesModel>(data, deseralizeSettings);
-
-            FormulaEngineDuration = m.FormulaEngineDuration;
-            StorageEngineDuration = m.StorageEngineDuration;
-            StorageEngineCpu = m.StorageEngineCpu;
-            TotalDuration = m.TotalDuration;
-            VertipaqCacheMatches = m.VertipaqCacheMatches;
-            StorageEngineQueryCount = m.StorageEngineQueryCount;
-            TotalCpuDuration = m.TotalCpuDuration;
-
-            this._storageEngineEvents.Clear();
-            this._storageEngineEvents.AddRange(m.StoreageEngineEvents);
-            NotifyOfPropertyChange(() => StorageEngineEvents);
-            
+            LoadJson(data);
         }
-
         #endregion
-       
 
-        #region Properties to handle layout changes
+        #region Properties to handle layout changes (WPF grid bindings)
 
-        public int TextGridRow { get { return ServerTimingDetails?.LayoutBottom ?? false ?4:1; } }
-        public int TextGridRowSpan { get { return ServerTimingDetails?.LayoutBottom?? false ? 1:3; } }
-        public int TextGridColumn { get { return ServerTimingDetails?.LayoutBottom??false ?2:4; } }
+        public int TextGridRow { get { return ServerTimingDetails?.LayoutBottom ?? false ? 4 : 2; } }
+        public int TextGridRowSpan { get { return ServerTimingDetails?.LayoutBottom ?? false ? 1 : 3; } }
+        public int TextGridColumnSpan { get { return ServerTimingDetails?.LayoutBottom ?? false ? 3 : 1; } }
+        public int TextGridColumn { get { return ServerTimingDetails?.LayoutBottom ?? false ? 2 : 4; } }
 
-        public GridLength TextColumnWidth { get { return ServerTimingDetails?.LayoutBottom??false ? new GridLength(0) : new GridLength(1, GridUnitType.Star); }  }
+        public GridLength TextColumnWidth { get { return ServerTimingDetails?.LayoutBottom ?? false ? new GridLength(0, GridUnitType.Pixel) : new GridLength(1, GridUnitType.Star); } }
 
-        private ServerTimingDetailsViewModel _serverTimingDetails;
-        public ServerTimingDetailsViewModel ServerTimingDetails { get { return _serverTimingDetails; } set {
-            if (_serverTimingDetails != null) { _serverTimingDetails.PropertyChanged -= ServerTimingDetails_PropertyChanged; }
-                _serverTimingDetails = value;
-                _serverTimingDetails.PropertyChanged += ServerTimingDetails_PropertyChanged;
-                NotifyOfPropertyChange(() => ServerTimingDetails);
-            } 
-        }
-
-        public override bool FilterForCurrentSession
-        {
-            get
-            {
-                return true;
-            }
-        }
-
-        private void ServerTimingDetails_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
+        protected override void ServerTimingDetails_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
         {
             switch (e.PropertyName)
             {
@@ -579,35 +131,319 @@ namespace DaxStudio.UI.ViewModels
                     NotifyOfPropertyChange(() => TextGridColumn);
                     NotifyOfPropertyChange(() => TextGridRow);
                     NotifyOfPropertyChange(() => TextGridRowSpan);
+                    NotifyOfPropertyChange(() => TextGridColumnSpan);
                     NotifyOfPropertyChange(() => TextColumnWidth);
                     break;
-                default:
-                    NotifyOfPropertyChange(() => StorageEngineEvents);
-                    break;
+            }
+            base.ServerTimingDetails_PropertyChanged(sender, e);
+        }
+
+        #endregion
+
+        protected override void OnClearAllStorageEvents()
+        {
+            StorageEventHeatmap = null;
+        }
+
+        public string CopyResultsForComments()
+        {
+            return CopyResultsData(includeHeader: true, formatTextForComment: true);
+        }
+        public string CopyResultsForCommentsData()
+        {
+            return CopyResultsData(includeHeader: false, formatTextForComment: true);
+        }
+        public override void CopyResults()
+        {
+            CopyResultsData(true);
+        }
+
+        public void CopyResultsData()
+        {
+            CopyResultsData(false);
+        }
+        public string CopyResultsData(bool includeHeader, bool formatTextForComment = false)
+        {
+            var dataObject = new DataObject();
+            var headers = string.Empty;
+            if (includeHeader) headers = "Query End\tTotal\tFE\tSE\tSE CPU\tSE Par.\tSE Queries\tSE Cache\n";
+            var values = $"{QueryEndDateTime.ToString(Constants.IsoDateFormatPaste)}\t{TotalDuration}\t{FormulaEngineDuration}\t{StorageEngineDuration}\t{StorageEngineCpu}\t{StorageEngineCpuFactor}\t{StorageEngineQueryCount}\t{VertipaqCacheMatches}";
+            string result = $"{headers}{values}";
+            dataObject.SetData(DataFormats.StringFormat, result);
+            dataObject.SetData(DataFormats.CommaSeparatedValue, $"{headers.Replace("\t", CultureInfo.CurrentCulture.TextInfo.ListSeparator)}\n{values.Replace("\t", CultureInfo.CurrentCulture.TextInfo.ListSeparator)}");
+            if (formatTextForComment)
+            {
+                var textHeader = includeHeader ? PasteServerTimingsEvent.SERVERTIMINGS_HEADER : string.Empty;
+                var textValues = $"-- {TotalDuration,9:#,0}  {FormulaEngineDuration,9:#,0}  {StorageEngineDuration,9:#,0}  {StorageEngineCpu,10:#,0}  x{StorageEngineCpuFactor,4:0.0}";
+                result = $"{textHeader}{(string.IsNullOrEmpty(textHeader) ? string.Empty : "\r\n")}{textValues}\r\n";
+                dataObject.SetData(DataFormats.Text, result);
+            }
+            Clipboard.SetDataObject(dataObject);
+            return result;
+        }
+
+        public void ExportDetails()
+        {
+            if (Options.ExportServerTimingDetailsToFolder)
+            {
+
+                var dialog = new System.Windows.Forms.FolderBrowserDialog();
+                dialog.Description = "A file per storage event will be created in the selected folder.";
+
+                if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK) ExportxmSqlFiles(dialog.SelectedPath);
+            }
+            else
+            {
+                Export();
             }
         }
 
-        #endregion
-
-        #region Title Bar Button Methods
-
-        public override void ClearAll()
+        public void CopySEQuery()
         {
-            FormulaEngineDuration = 0;
-            StorageEngineDuration = 0;
-            TotalCpuDuration = 0;
-            StorageEngineCpu = 0;
-            StorageEngineQueryCount = 0;
-            VertipaqCacheMatches = 0;
-            TotalDuration = 0;
-            _storageEngineEvents.Clear();
-            NotifyOfPropertyChange(() => StorageEngineEvents);
+            if (SelectedEvent == null)
+            {
+                Log.Debug("SelectedEvent is null on CopySEQuery");
+                return;
+            }
+            try
+            {
+                var queryText = SelectedEvent.QueryRichText ?? SelectedEvent.TextData;
+                if (string.IsNullOrEmpty(queryText))
+                {
+                    Clipboard.SetText(SelectedEvent.TextData ?? string.Empty);
+                    return;
+                }
+
+                var lines = queryText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+                var sb = new System.Text.StringBuilder();
+                foreach (var line in lines)
+                {
+                    if (sb.Length == 0 && line.StartsWith("SET DC_KIND", StringComparison.InvariantCulture))
+                        continue;
+                    if (line.StartsWith("Estimated", StringComparison.InvariantCulture))
+                        continue;
+
+                    if (sb.Length > 0) sb.AppendLine();
+                    sb.Append(line);
+                }
+
+                var result = sb.ToString().TrimEnd('\r', '\n');
+                Clipboard.SetText(result);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(ServerTimesViewModel), nameof(CopySEQuery), "Error copying SE Query text");
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error copying SE query text\n{ex.Message}"));
+            }
         }
 
-        public override void CopyAll()
+        public async void ShowTraceDiagnostics()
         {
-            Log.Warning("CopyAll Method not implemented for ServerTimesViewModel");
+            var traceDiagnosticsViewModel = new RequestInformationViewModel(this);
+            await WindowManager.ShowDialogBoxAsync(traceDiagnosticsViewModel, settings: new System.Collections.Generic.Dictionary<string, object>
+            {
+                { "WindowStyle", WindowStyle.None},
+                { "ShowInTaskbar", false},
+                { "ResizeMode", ResizeMode.NoResize},
+                { "Background", Brushes.Transparent},
+                { "AllowsTransparency",true}
+
+            });
         }
-        #endregion
+
+        /// <summary>
+        /// Shows the Storage Engine Dependencies (ERD) diagram for all SE events.
+        /// Opens as a dockable tool window that can be resized, floated, or maximized.
+        /// </summary>
+        public void ShowQueryDependencies()
+        {
+            try
+            {
+                Log.Information("{class} {method} {message}", nameof(ServerTimesViewModel), nameof(ShowQueryDependencies), $"Starting with {AllStorageEngineEvents.Count} events");
+
+                var erdViewModel = new XmSqlErdViewModel(_eventAggregator, ServerTimingDetails);
+
+                _eventAggregator.PublishAsync(new ShowToolWindowEvent(erdViewModel));
+
+                erdViewModel.AnalyzeEvents(AllStorageEngineEvents);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(ServerTimesViewModel), nameof(ShowQueryDependencies), "Error showing Query Dependencies");
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error showing Storage Engine Dependencies\n{ex.Message}"));
+            }
+        }
+
+        /// <summary>
+        /// Shows the tables referenced by SE queries in the Model Diagram.
+        /// </summary>
+        public void ShowInModelDiagram()
+        {
+            try
+            {
+                Log.Information("{class} {method} Extracting table names from {count} SE events",
+                    nameof(ServerTimesViewModel), nameof(ShowInModelDiagram), AllStorageEngineEvents.Count);
+
+                IXmSqlParser parser = Options.UseAntlrParser
+                    ? (IXmSqlParser)new AntlrXmSqlParser()
+                    : new XmSqlParser();
+                var analysis = new XmSqlAnalysis();
+
+                foreach (var evt in AllStorageEngineEvents)
+                {
+                    if (evt.IsInternalEvent) continue;
+
+                    var metrics = new XmSqlParser.SeEventMetrics
+                    {
+                        EstimatedRows = evt.EstimatedRows,
+                        DurationMs = evt.Duration,
+                        IsCacheHit = evt.Class == DaxStudioTraceEventClass.VertiPaqSEQueryCacheMatch,
+                        CpuTimeMs = evt.CpuTime
+                    };
+
+                    if (evt.IsDirectQueryEvent)
+                    {
+                        var sqlText = !string.IsNullOrWhiteSpace(evt.TextData) ? evt.TextData : evt.Query;
+                        if (!string.IsNullOrWhiteSpace(sqlText))
+                            parser.ParseDirectQuerySql(sqlText, analysis, metrics);
+                    }
+                    else if (evt.IsScanEvent && !string.IsNullOrWhiteSpace(evt.Query))
+                    {
+                        parser.ParseQueryWithMetrics(evt.Query, analysis, metrics);
+                    }
+                }
+
+                var tableNames = analysis.Tables.Keys.ToList();
+
+                if (tableNames.Count == 0)
+                {
+                    _eventAggregator.PublishAsync(new OutputMessage(MessageType.Warning,
+                        "No table references found in Storage Engine queries."));
+                    return;
+                }
+
+                Log.Information("{class} {method} Found {count} tables: {tables}",
+                    nameof(ServerTimesViewModel), nameof(ShowInModelDiagram),
+                    tableNames.Count, string.Join(", ", tableNames));
+
+                _eventAggregator.PublishAsync(
+                    new ShowTablesInModelDiagramEvent(tableNames, includeRelated: false));
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(ServerTimesViewModel),
+                    nameof(ShowInModelDiagram), "Error showing tables in Model Diagram");
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error,
+                    $"Error showing tables in Model Diagram\n{ex.Message}"));
+            }
+        }
+
+        /// <summary>
+        /// Re-applies formatting to all storage engine events using current Options.
+        /// </summary>
+        public async void ReformatQueries()
+        {
+            if (IsBusy) return;
+
+            IsBusy = true;
+            BusyMessage = "Reformatting queries...";
+
+            await Task.Delay(50);
+
+            try
+            {
+                var allEvents = AllStorageEngineEvents;
+                var totalEvents = allEvents.Count;
+                var events = allEvents.ToList();
+                var remapColumns = RemapColumnNames;
+                var remapTables = RemapTableNames;
+                var dateColIds = DateColumnIds;
+
+                await Task.Run(() =>
+                {
+                    int processedCount = 0;
+                    foreach (var evt in events)
+                    {
+                        evt.FormatQuery(remapColumns, remapTables, dateColIds);
+
+                        processedCount++;
+                        if (processedCount % 50 == 0)
+                        {
+                            var count = processedCount;
+                            Application.Current.Dispatcher.InvokeAsync(() =>
+                                BusyMessage = $"Reformatting queries ({count}/{totalEvents})...");
+                        }
+                    }
+                });
+
+                NotifyOfPropertyChange(nameof(StorageEngineEvents));
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        public Task HandleAsync(CopySEQueryEvent message, CancellationToken cancellationToken)
+        {
+            CopySEQuery();
+            return Task.CompletedTask;
+        }
+        public Task HandleAsync(CopyPasteServerTimingsEvent message, CancellationToken cancellationToken)
+        {
+            string textResult;
+            if (message.IncludeHeader)
+            {
+                textResult = CopyResultsForComments();
+            }
+            else
+            {
+                textResult = CopyResultsForCommentsData();
+            }
+            _eventAggregator.PublishAsync(new PasteServerTimingsEvent(message.IncludeHeader, textResult), cancellationToken);
+            return Task.CompletedTask;
+        }
+
+
+        public Task HandleAsync(ThemeChangedEvent message, CancellationToken cancellationToken)
+        {
+            StorageEventHeatmap = null;
+            NotifyOfPropertyChange(nameof(StorageEventHeatmap));
+
+            SyntaxHighlightingHelper.SetAllColorThemes(Options.AutoTheme.ToString());
+
+            return Task.CompletedTask;
+        }
+
+        private ImageSource _storageEventHeatmap;
+        public ImageSource StorageEventHeatmap
+        {
+            get
+            {
+                if (_storageEventHeatmap != null) return _storageEventHeatmap;
+                if (this.StorageEngineEvents.Count == 0) return new DrawingImage();
+
+                var element = (FrameworkElement)this.GetView();
+
+                Brush scanBrush = (Brush)element.FindResource("Theme.Brush.Accent");
+                Brush feBrush = (Brush)element.FindResource("Theme.Brush.Accent2");
+                Brush batchBrush = (Brush)element.FindResource("Theme.Brush.Accent1");
+                Brush internalBrush = (Brush)element.FindResource("Theme.Brush.Accent3");
+
+                _storageEventHeatmap = TimelineHeatmapImageGenerator.GenerateBitmap(this.StorageEngineEvents.ToList(), 5000, 10, feBrush, scanBrush, batchBrush, internalBrush);
+#if DEBUG
+                using (StreamWriter writer = File.CreateText("c:\\temp\\heatmap.xaml"))
+                {
+                    XamlWriter.Save(_storageEventHeatmap, writer);
+                }
+#endif
+                return _storageEventHeatmap;
+            }
+            set
+            {
+                _storageEventHeatmap = value;
+                NotifyOfPropertyChange();
+            }
+        }
     }
 }

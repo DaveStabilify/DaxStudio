@@ -1,6 +1,8 @@
-﻿using System.Linq;
-using Xceed.Wpf.AvalonDock.Layout;
+using System.Linq;
 using DaxStudio.UI.Interfaces;
+using AvalonDock.Layout;
+using DaxStudio.UI.ViewModels;
+using DaxStudio.Core.Interfaces;
 
 namespace DaxStudio.UI.Utils
 {
@@ -8,7 +10,10 @@ namespace DaxStudio.UI.Utils
     {
         public bool BeforeInsertAnchorable(LayoutRoot layout, LayoutAnchorable anchorableToShow, ILayoutContainer destinationContainer)
         {
-            var myViewModel = anchorableToShow.Content as IToolWindow;
+           var myViewModel = anchorableToShow.Content as IToolWindow;
+            var doc = layout.Manager.DataContext as DocumentViewModel;
+            if (doc != null && doc.IsLoadingLayout) return false;
+
             if (myViewModel != null)
             {
                 
@@ -18,6 +23,7 @@ namespace DaxStudio.UI.Utils
                 if(anchorableToShow.ContentId == null) anchorableToShow.ContentId = anchorableToShow.Content.GetType().ToString();
                 if (pane != null)
                 {
+                    anchorableToShow.CanDockAsTabbedDocument = false;
                     pane.Children.Add(anchorableToShow);
                     return true;
                 }

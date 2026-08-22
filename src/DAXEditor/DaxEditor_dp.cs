@@ -1,10 +1,11 @@
-﻿using ICSharpCode.AvalonEdit;
+﻿using System;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
+using ICSharpCode.AvalonEdit;
 
-namespace DAXEditor
+namespace DAXEditorControl
 {
-    using System.Windows;
-    using System.Windows.Input;
-    using System.Windows.Media;
 
     /// <summary>
     /// This part of the AvalonEdit extension contains additional
@@ -22,6 +23,16 @@ namespace DAXEditor
                                          new UIPropertyMetadata(new SolidColorBrush(Color.FromArgb(33, 33, 33, 33)),
                                          DAXEditor.OnCurrentLineBackgroundChanged));
         #endregion EditorCurrentLineBackground
+
+        #region Indenting
+
+        private static readonly DependencyProperty ConvertTabsToSpacesProperty =
+            DependencyProperty.Register("ConvertTabsToSpaces", typeof(bool), typeof(DAXEditor), new UIPropertyMetadata(false, OnConvertTabsToSpacesChanged));
+
+        private static readonly DependencyProperty IndentationSizeProperty =
+            DependencyProperty.Register("IndentationSize", typeof(int), typeof(DAXEditor), new UIPropertyMetadata(4, OnIndentationSizeChanged));
+
+        #endregion
 
         #region CaretPosition
         private static readonly DependencyProperty ColumnProperty =
@@ -96,6 +107,21 @@ namespace DAXEditor
         }
         #endregion EditorCurrentLineBackground
 
+        #region Indenting
+        public bool ConvertTabsToSpaces
+        {
+            get => (bool)GetValue(ConvertTabsToSpacesProperty);
+            set => SetValue(ConvertTabsToSpacesProperty, value);
+        }
+
+        public int IndentationSize
+        {
+            get => (int)GetValue(IndentationSizeProperty);
+            set => SetValue(IndentationSizeProperty, value);
+        }
+
+        #endregion
+
         #region CaretPosition
         public int Column
         {
@@ -123,6 +149,14 @@ namespace DAXEditor
             }
         }
         #endregion CaretPosition
+
+        public static readonly DependencyProperty ContextMenuWordProperty =
+                DependencyProperty.Register("ContextMenuWord", typeof(string), typeof(DAXEditor), new UIPropertyMetadata(string.Empty));
+        public string ContextMenuWord
+        {
+            get => (string)GetValue(ContextMenuWordProperty);
+            set => SetValue(ContextMenuWordProperty, value);
+        }
 
         #region EditorStateProperties
         /// <summary>
@@ -235,6 +269,8 @@ namespace DAXEditor
         #endregion EditorStateProperties
         #endregion properties
 
+        public bool IsMouseOverCompletionWindow { get; set; }
+
         #region methods
         /// <summary>
         /// The dependency property for has changed.
@@ -245,19 +281,38 @@ namespace DAXEditor
         /// <param name="e"></param>
         private static void OnCurrentLineBackgroundChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
         {
-            DAXEditor view = d as DAXEditor;
-
-            if (view != null && e != null)
+            if (d is DAXEditor view)
             {
-                SolidColorBrush newValue = e.NewValue as SolidColorBrush;
-
-                if (newValue != null)
+                if (e.NewValue is SolidColorBrush newValue)
                 {
                     view.EditorCurrentLineBackground = newValue;
                     //view.AdjustCurrentLineBackground(newValue);
                 }
             }
         }
+
+
+        private static void OnConvertTabsToSpacesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (!(d is DAXEditor view)) return;
+
+            var convertTabsToSpaces = e.NewValue as bool?;
+
+            view.Options.ConvertTabsToSpaces = convertTabsToSpaces ?? false;
+            
+        }
+
+        private static void OnIndentationSizeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (!(d is DAXEditor view)) return;
+
+            var indentSize = e.NewValue as int?;
+            if (indentSize < 1) indentSize = 1;
+
+            view.Options.IndentationSize = indentSize ?? 4;
+        }
+
+        
         #endregion methods
 
 
@@ -276,7 +331,8 @@ namespace DAXEditor
         protected override void OnLostFocus(RoutedEventArgs e)
         {
             base.OnLostFocus(e);
-            this.DisposeCompletionWindow();
+            DisposeCompletionWindow();
+            System.Diagnostics.Debug.WriteLine("OnLostFocus");
         }
 
         protected override void OnLostKeyboardFocus(KeyboardFocusChangedEventArgs e)
@@ -291,5 +347,97 @@ namespace DAXEditor
             base.OnLostMouseCapture(e);
             System.Diagnostics.Debug.WriteLine("OnLostMouseCapture");
         }
+
+        // Show Spaces Dependency Property
+        private static readonly DependencyProperty ShowSpacesProperty =
+            DependencyProperty.Register("ShowSpaces", typeof(bool), typeof(DAXEditor), new UIPropertyMetadata(false, OnShowSpacesChanged));
+
+        private static void OnShowSpacesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (!(d is DAXEditor view)) return;
+
+            view.Options.ShowSpaces = (bool)e.NewValue;
+        }
+
+        
+        public bool ShowSpaces
+        {
+            get => (bool)GetValue(ShowSpacesProperty);
+            set => SetValue(ShowSpacesProperty, value);
+        }
+
+        // Show Tabs
+        private static readonly DependencyProperty ShowTabsProperty =
+            DependencyProperty.Register("ShowTabs", typeof(bool), typeof(DAXEditor), new UIPropertyMetadata(false, OnShowTabsChanged));
+
+        private static void OnShowTabsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (!(d is DAXEditor view)) return;
+
+            view.Options.ShowTabs = (bool)e.NewValue;
+        }
+
+
+        public bool ShowTabs
+        {
+            get => (bool)GetValue(ShowTabsProperty);
+            set => SetValue(ShowTabsProperty, value);
+        }
+
+        // Show Box for Control Characters
+        private static readonly DependencyProperty ShowBoxForControlCharactersProperty =
+            DependencyProperty.Register("ShowBoxForControlCharacters", typeof(bool), typeof(DAXEditor), new UIPropertyMetadata(false, OnShowBoxForControlCharactersChanged));
+
+        private static void OnShowBoxForControlCharactersChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (!(d is DAXEditor view)) return;
+
+            view.Options.ShowBoxForControlCharacters = (bool)e.NewValue;
+        }
+
+        public bool ShowBoxForControlCharacters
+        {
+            get => (bool)GetValue(ShowBoxForControlCharactersProperty);
+            set => SetValue(ShowBoxForControlCharactersProperty, value);
+        }
+
+        // Non Printable Character Brush
+        private static readonly DependencyProperty NonPrintableCharacterBrushProperty =
+            DependencyProperty.Register("NonPrintableCharacterBrush", typeof(Brush), typeof(DAXEditor), new UIPropertyMetadata(new SolidColorBrush(Colors.Transparent), OnNonPrintableCharacterBrushChanged));
+
+        private static void OnNonPrintableCharacterBrushChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (!(d is DAXEditor view)) return;
+
+            if ( e.NewValue is SolidColorBrush b)
+            {
+                if (b.Color == Colors.Transparent) return; // do nothing 
+            }
+            view.TextArea.TextView.NonPrintableCharacterBrush = (Brush)e.NewValue;
+        }
+
+        public Brush NonPrintableCharacterBrush
+        {
+            get => (Brush)GetValue(NonPrintableCharacterBrushProperty);
+            set => SetValue(NonPrintableCharacterBrushProperty, value);
+        }
+
+        // Show End of Line
+        private static readonly DependencyProperty ShowEndOfLineProperty =
+            DependencyProperty.Register("ShowEndOfLine", typeof(bool), typeof(DAXEditor), new UIPropertyMetadata(false, OnShowEndOfLineChanged));
+
+        private static void OnShowEndOfLineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (!(d is DAXEditor view)) return;
+
+            view.Options.ShowEndOfLine = (bool)e.NewValue;
+        }
+
+        public bool ShowEndOfLine
+        {
+            get => (bool)GetValue(ShowEndOfLineProperty);
+            set => SetValue(ShowEndOfLineProperty, value);
+        }
+
     }
 }

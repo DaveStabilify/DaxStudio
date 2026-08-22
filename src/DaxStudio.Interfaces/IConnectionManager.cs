@@ -1,0 +1,44 @@
+﻿using ADOTabular;
+using ADOTabular.Enums;
+using ADOTabular.MetadataInfo;
+using DaxStudio.Common.Enums;
+using TOM = Microsoft.AnalysisServices;
+using Adomd = Microsoft.AnalysisServices.AdomdClient;
+using System.Collections.Generic;
+using System.Data;
+#if NET8_0_OR_GREATER
+using AdomdAccessToken = Microsoft.AnalysisServices.AccessToken;
+#else
+using AdomdAccessToken = Microsoft.AnalysisServices.AdomdClient.AccessToken;
+#endif
+
+namespace DaxStudio.Interfaces
+{
+    public interface IConnectionManager : IModelIntellisenseProvider
+    {
+        string ApplicationName { get; }
+        string ConnectionString { get; }
+        string DatabaseName { get; }
+        string FileName { get; }
+        bool IsPowerPivot { get; }
+        bool IsConnected { get; }
+        string SessionId { get; }
+        int SPID { get; }
+        Dictionary<DaxStudioTraceEventClass, HashSet<TOM.TraceColumn>> SupportedTraceEventClasses { get; }
+        void ClearSupportedTraceEventClasses();
+        AdomdType Type { get; }
+        DaxColumnsRemap DaxColumnsRemapInfo { get; }
+        void Ping();
+        void PingTrace();
+        IEnumerable<string> AllFunctions { get; }
+
+        ADOTabularDatabase Database { get; }
+        string SelectedModelName { get; }
+
+        ADOTabular.AdomdClientWrappers.AdomdDataReader ExecuteReader(string query, List<Adomd.AdomdParameter> paramList);
+        ADOTabular.AdomdClientWrappers.AdomdDataReader ExecuteReaderForPrepare(string query, List<Adomd.AdomdParameter> paramList);
+        DataTable ExecuteDaxQueryDataTable(string query);
+        ServerType ServerType { get; }
+        AdomdAccessToken AccessToken { get; }
+    }
+}

@@ -20,7 +20,8 @@ namespace DaxStudio.UI.Utils
         ColumnClosed,
         Measure,
         MeasureClosed,
-        LetterOrDigit,
+        Letter,
+        Digit,
         Other,
         NotSet,
         TableDelimiter,
@@ -29,11 +30,11 @@ namespace DaxStudio.UI.Utils
 
     public class DaxLineState
     {
-        private int _endOffset=0;
-        private int _startOffset=0;
+        private int _endOffset;
+        private int _startOffset;
         private int _caretOffset;
-        private int _startOfLineOffset = 0;
-        private Utils.LineState _state;
+        private int _startOfLineOffset;
+        private LineState _state;
         private LineState _endState;
         private string _tableName;
         //private object _columnName;
@@ -44,7 +45,7 @@ namespace DaxStudio.UI.Utils
             _caretOffset = caretOffset;
             _startOffset = startOffset;
             _endOffset = endOffset;
-            _endState = Utils.LineState.NotSet;
+            _endState = LineState.NotSet;
             _startOfLineOffset = startOfLineOffset;
         }
         public LineState LineState { get { return _state; } }
@@ -60,10 +61,19 @@ namespace DaxStudio.UI.Utils
             {
                 if (pos < _caretOffset && _endOffset == 0)
                 {
+                    var previousState = _state;
                     _state = newState;
+                    // Letters and digits are both part of a single word/identifier
+                    // (e.g. "Dim1"), so a transition between the Letter and Digit states
+                    // should keep the original start of the word rather than resetting
+                    // it to the position of the digit.
+                    bool stayingWithinWord =
+                        (previousState == LineState.Letter && newState == LineState.Digit)
+                        || (previousState == LineState.Digit && newState == LineState.Letter);
                     if ((_state == LineState.Column && newState == LineState.ColumnClosed)
                         || (_state == LineState.Table && newState == LineState.TableClosed)
-                        || (_state == LineState.Measure && newState == LineState.MeasureClosed))
+                        || (_state == LineState.Measure && newState == LineState.MeasureClosed)
+                        || stayingWithinWord)
                     {
                         // don't reset startOffset
                     }
@@ -82,14 +92,17 @@ namespace DaxStudio.UI.Utils
                         _endOffset = pos;
                         if (newState == LineState.MeasureClosed) {
                             _endState = LineState.Measure;
+                            _state = newState;
                             _endOffset++;
                         }
                         if (newState == LineState.TableClosed) {
                             _endState = LineState.Table;
+                            _state = newState;
                             _endOffset++;
                         }
                         if (newState == LineState.ColumnClosed) {
                             _endState = LineState.Column;
+                            _state = newState;
                             _endOffset++;
                         }
                         
@@ -111,8 +124,10 @@ namespace DaxStudio.UI.Utils
 
         public static DaxLineState ParseLine(string line, int offset, int startOfLineOffset )
         {
+            //System.Diagnostics.Debug.WriteLine(">>> ParseLine");
+
             // todo - can we get away with 1 string builder instance?
-            StringBuilder sbTableName = new StringBuilder();
+           StringBuilder sbTableName = new StringBuilder();
             StringBuilder sbColumnName = new StringBuilder();
             StringBuilder sbMeasureName = new StringBuilder();
 
@@ -133,7 +148,8 @@ namespace DaxStudio.UI.Utils
                     case '[':
                         if (daxState.LineState != LineState.String)
                         {
-                            if (daxState.LineState == LineState.LetterOrDigit
+                            if (daxState.LineState == LineState.Letter
+                                || daxState.LineState == LineState.Digit
                                 || daxState.LineState == LineState.Table
                                 || daxState.LineState == LineState.TableClosed)
                             {
@@ -197,8 +213,7 @@ namespace DaxStudio.UI.Utils
                             && daxState.LineState != LineState.Measure
                             )
                         {
-
-                            daxState.SetState(line[i].IsDaxLetterOrDigit() ? LineState.LetterOrDigit : LineState.Other, i);
+                            SetLetterOrDigitState(line, daxState, i);
                         }
                         if (daxState.LineState == LineState.Table) sbTableName.Append(line[i]);
                         if (daxState.LineState == LineState.Column) sbColumnName.Append(line[i]);
@@ -221,7 +236,7 @@ namespace DaxStudio.UI.Utils
                             && daxState.LineState != LineState.Dmv
                             && daxState.LineState != LineState.Measure)
                         {
-                            daxState.SetState( line[i].IsDaxLetterOrDigit()?LineState.LetterOrDigit:LineState.Other ,i);
+                            SetLetterOrDigitState(line, daxState, i);
                         }
                         if (daxState.LineState == LineState.Table) sbTableName.Append(line[i]);
                         if (daxState.LineState == LineState.Column) sbColumnName.Append(line[i]);
@@ -230,10 +245,36 @@ namespace DaxStudio.UI.Utils
                 }
 
             }
-            
+
+            if (daxState.LineState != LineState.String
+                && daxState.LineState != LineState.Table
+                && daxState.LineState != LineState.Column
+                && daxState.LineState != LineState.Measure
+                )
+            {
+
+                daxState.SetState( LineState.Other, line.Length);
+            }
+
             daxState.TableName = sbTableName.ToString();
             daxState.ColumnName = sbColumnName.ToString();
             return daxState;
+        }
+
+        private static void SetLetterOrDigitState(string line, DaxLineState daxState, int i)
+        {
+            if (line[i].IsDaxLetter())
+            {
+                daxState.SetState(LineState.Letter, i);
+            }
+            else if (char.IsDigit(line[i]))
+            {
+                daxState.SetState(LineState.Digit, i);
+            }
+            else
+            {
+                daxState.SetState(LineState.Other, i);
+            }
         }
 
         public static string GetPreceedingTableName(string line)
@@ -283,11 +324,8 @@ namespace DaxStudio.UI.Utils
             {
                 switch (daxState.LineState)
                 {
-                    case LineState.Table:
                     case LineState.TableClosed:
                     case LineState.ColumnClosed:
-                    case LineState.Column:
-                    case LineState.Measure:
                     case LineState.MeasureClosed:
                         // for these states we want to replace the entire current "word"
                         segment = new LinePosition() { Offset = startOfLineOffset + daxState.StartOffset, Length = daxState.EndOffset - daxState.StartOffset };
@@ -331,6 +369,8 @@ namespace DaxStudio.UI.Utils
                     case ',':
                     case ';':
                     case '.':
+                    case '{':
+                    case '}':
                     case ' ':
                     case '\t':
                         if (!inStr && !inTab && !inCol) { word = ""; pos = i + 1; }

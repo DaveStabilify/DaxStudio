@@ -1,0 +1,56 @@
+﻿using DaxStudio.Core.Interfaces;
+using DaxStudio.Core.Model;
+using DaxStudio.Core.ResultsTargets;
+using Serilog;
+using Spectre.Console.Cli;
+using System.Collections.Generic;
+using System.ComponentModel;
+using Microsoft.AnalysisServices.AdomdClient;
+using DaxStudio.CommandLine.UIStubs;
+using System.Threading;
+
+namespace DaxStudio.CommandLine.Commands
+{
+    
+    internal class CaptureDiagnosticsCommand:Command<CaptureDiagnosticsCommand.Settings>
+    {
+        internal class Settings : CommandSettingsRawBase, IQueryTextProvider
+        {
+
+            [CommandArgument(0, "[file]")]
+            [Description("A text file containing a DAX query to be executed")]
+            public string File { get; set; }
+
+            [CommandOption("-q|--query <query>")]
+            public string Query { get; set; }
+            [CommandOption("-o|--out <filename>")]
+            [Description("The name of the file for the results")]
+            public string Out { get; set; }
+
+            public string EditorText => Query;
+
+            public string QueryText => Query;
+
+            public List<AdomdParameter> ParameterCollection => new List<AdomdParameter>();
+            public QueryInfo QueryInfo { get => new QueryInfo(Query, null); set => throw new System.NotImplementedException(); }
+        }
+
+        protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
+        {
+            Log.Information("Starting Capture Diagnostics command");
+            if (settings.File != null && settings.Query == null)
+            {
+                settings.Query = System.IO.File.ReadAllText(settings.File);
+            }
+            // export to csv
+
+            var runner = new QueryRunner(settings);
+            var target = new ResultsTargetTextFile();
+            target.OutputResultsAsync(runner, settings, settings.Out).Wait();
+            Log.Information("Finished CSV command");
+            return 0;
+        }
+    }
+    
+    
+}

@@ -1,29 +1,33 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace DaxStudio.UI.Model
+﻿namespace DaxStudio.UI.Model
 {
     public enum RunStyleIcons
     {
         RunOnly,
-        ClearThenRun
+        RunBuilder
     }
-    public class RunStyle
+    public class RunStyle : Caliburn.Micro.PropertyChangedBase
     {
-        public RunStyle(string name, RunStyleIcons icon, bool clearCache, string tooltip)
+        public RunStyle(string name, RunStyleIcons icon, string tooltip)
         {
             Name = name;
             Icon = icon;
-            ClearCache = clearCache;
             Tooltip = tooltip;
-        }
-        public string Name { get; private set; }
-        public RunStyleIcons Icon { get; private set; }
-        public string Tooltip { get; private set; }
-        public bool ClearCache { get; private set; }
 
+            if (icon == RunStyleIcons.RunBuilder) ImageResource = "run_query_builderDrawingImage";
+            else ImageResource = "runDrawingImage";
+
+        }
+        public string Name { get; }
+        public RunStyleIcons Icon { get;  }
+        public string ImageResource { get; }
+        public string Tooltip { get;  }
+        public bool ClearCache { get; set; }
+        private bool _isEnabled = false;
+        public bool IsEnabled { get => _isEnabled; 
+            set { 
+                _isEnabled = value;
+                NotifyOfPropertyChange();    
+            } 
+        } 
     }
 }

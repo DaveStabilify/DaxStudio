@@ -7,13 +7,13 @@ namespace ADOTabular
 {
     public class ADOTabularFunctionGroupCollection : IEnumerable<ADOTabularFunctionGroup>
     {
-        private readonly Dictionary<string, ADOTabularFunctionGroup> _funcGroups;
+        private readonly SortedDictionary<string, ADOTabularFunctionGroup> _funcGroups;
         private readonly Dictionary<string, ADOTabularFunction> _funcDict;
         private readonly ADOTabularConnection _connection;
         public ADOTabularFunctionGroupCollection(ADOTabularConnection connection)
         {
-            _connection = connection;
-            _funcGroups = new Dictionary<string, ADOTabularFunctionGroup>();
+            _connection = connection ?? throw new ArgumentNullException(nameof(connection));
+            _funcGroups = new SortedDictionary<string, ADOTabularFunctionGroup>();
             _funcDict = new Dictionary<string, ADOTabularFunction>( StringComparer.OrdinalIgnoreCase);
             _connection.Visitor.Visit(this);
         }
@@ -25,6 +25,7 @@ namespace ADOTabular
 
         public void Add(ADOTabularFunctionGroup group)
         {
+            if (group == null) throw new ArgumentNullException(nameof(group));
             if (_funcGroups.ContainsKey(group.Caption))
                 return;
             _funcGroups.Add(group.Caption,group);
@@ -32,12 +33,15 @@ namespace ADOTabular
 
         public void AddFunction(string groupName, string functionName, string description, DataRow[] parameters)
         {
-            var fun = new ADOTabularFunction(functionName, description, groupName, new ADOTabularParameterCollection(parameters));
-            if (_funcGroups.ContainsKey(groupName))
+            var fun = new ADOTabularFunction(functionName, description, groupName, new ADOTabularFunctionArgumentCollection(parameters));
+            if (!_funcGroups.ContainsKey(groupName))
                 _funcGroups.Add(groupName, new ADOTabularFunctionGroup(groupName,_connection));
             ADOTabularFunctionGroup grp = _funcGroups[groupName];
-            grp.Functions.Add(fun);
-            _funcDict.Add(fun.Caption, fun);
+            if (grp == null && !grp.Functions.ContainsKey(functionName))
+            {
+                grp.Functions.Add(fun);
+                _funcDict.Add(fun.Caption, fun);
+            }
         }
 
         public void AddFunction(DataRow functionDataRow)
@@ -68,8 +72,7 @@ namespace ADOTabular
 
         public ADOTabularFunction GetByName(string name)
         {
-            ADOTabularFunction fun = null;
-            _funcDict.TryGetValue(name, out fun);
+            _ = _funcDict.TryGetValue(name, out ADOTabularFunction fun);
             return fun;
         }
     }

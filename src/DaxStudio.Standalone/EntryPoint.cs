@@ -1,34 +1,49 @@
-﻿using System;
+using System;
 using System.Reflection;
 using System.Windows;
 using DaxStudio.UI;
 using Serilog;
 using DaxStudio.UI.Utils;
-using System.IO;
-using Fclp;
 using DaxStudio.Common;
 using System.Windows.Controls;
 using Caliburn.Micro;
+using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
+using DaxStudio.UI.Model;
+using System.Threading.Tasks;
+using System.IO;
+using DaxStudio.Interfaces;
+using DaxStudio.UI.Interfaces;
+using DaxStudio.UI.Views;
+using Serilog.Core;
+using Constants = DaxStudio.Common.Constants;
+using System.Text;
+using System.Windows.Media;
+using System.Configuration;
+using DaxStudio.Common.Extensions;
+using System.IO.Pipes;
+using System.Windows.Shell;
+using System.ComponentModel;
+using System.Globalization;
+
+#if NET472
+using Windows.Management.Update;
+#endif
+//using Microsoft.Identity.Client;
 
 namespace DaxStudio.Standalone
 {
     public static class EntryPoint 
     {
-        public static ILogger log;
+        private static ILogger _log;
         private static  IEventAggregator _eventAggregator;
+        private static IGlobalOptions _options;
 
+        // need to create application first
+        private static readonly Application App = new Application();
         static EntryPoint()
         {
-//            log = new LoggerConfiguration().ReadAppSettings().CreateLogger();
-            
-//            //log = new LoggerConfiguration().WriteTo.Loggly().CreateLogger();
-//#if DEBUG
-//            Serilog.Debugging.SelfLog.Out =  Console.Out;
-//#endif
-//            Log.Logger = log;
-//            Log.Information("============ DaxStudio Startup =============");
-//            //AppDomain.CurrentDomain.AssemblyResolve += ResolveAssembly;
+
             
         }
 
@@ -36,8 +51,8 @@ namespace DaxStudio.Standalone
         private static Assembly ResolveAssembly(object sender, ResolveEventArgs args)
         {
             //Log.Debug("Class {0} Method {1} RequestingAssembly: {2} Name: {3}", "EntryPoint", "ResolveAssembly", args.RequestingAssembly, args.Name);
-            System.Diagnostics.Debug.WriteLine(string.Format("ReqAss: {0}, Name{1}", args.RequestingAssembly, args.Name));
-            if (args.Name.StartsWith("Microsoft.AnalysisServices")) return SsasAssemblyResolver.Instance.Resolve(args.Name);
+            System.Diagnostics.Debug.WriteLine($"ReqAss: {args.RequestingAssembly}, Name{args.Name}");
+            if (args.Name.StartsWith("Microsoft.AnalysisServices", StringComparison.InvariantCultureIgnoreCase)) return SsasAssemblyResolver.Instance.Resolve(args.Name);
             return null;
         }
         
@@ -46,165 +61,528 @@ namespace DaxStudio.Standalone
         [STAThread]
         public static void Main()
         {
-            try
+            // DaxStudio.exe is a WPF (Windows subsystem) executable, so it has no
+            // console of its own. When the user is asking for help we attach to
+            // the parent process's console so that Spectre's rendered help text
+            // is visible. We only do this when help was requested so the normal
+            // launch path stays clean.
+            var startupArgs = Environment.GetCommandLineArgs();
+            var helpRequested = CmdLineArgs.IsHelpRequested(startupArgs);
+            if (helpRequested)
             {
-                // Setup logging
-                var levelSwitch = new Serilog.Core.LoggingLevelSwitch(Serilog.Events.LogEventLevel.Error);
-                var config = new LoggerConfiguration()
-                    .ReadFrom.AppSettings()
-                    .MinimumLevel.ControlledBy(levelSwitch);
+                ConsoleHandler.RedirectToParent();
+            }
 
-                var logPath = Path.Combine(Environment.ExpandEnvironmentVariables(Constants.LogFolder), 
-                                            Constants.StandaloneLogFileName);
-                config.WriteTo.RollingFile(logPath
-                        , retainedFileCountLimit: 10);
+            // add unhandled exception handler
+            App.DispatcherUnhandledException += App_DispatcherUnhandledException;
+            AppDomain.CurrentDomain.UnhandledException += CurrentDomainOnUnhandledException;
+            TaskScheduler.UnobservedTaskException += TaskSchedulerOnUnobservedTaskException;
 
-                log = config.CreateLogger();
+            AppDomain.CurrentDomain.AssemblyResolve += ResolveAssembly;
 
-                // need to create application first
-                var app = new Application();
+            //ConsoleHandler.RedirectToParent();
 
-                // add unhandled exception handler
-                app.DispatcherUnhandledException += App_DispatcherUnhandledException;
+            // Setup logging, default to information level to start with to log the startup and key system information
+            var levelSwitch = new Serilog.Core.LoggingLevelSwitch(Serilog.Events.LogEventLevel.Information);
 
-                // then load Caliburn Micro bootstrapper
-                AppBootstrapper bootstrapper = new AppBootstrapper(Assembly.GetAssembly(typeof(DaxStudioHost)), true);
+            // Detect whether the Shift key was held down at startup to enable verbose logging.
+            // This value is stored in App.Args() (backed by Application.Properties) but is cleared
+            // again by ReadCommandLineArgs() below, so we capture it here and re-apply it afterwards.
+            var isLoggingKeyDown = ConfigureLogging(levelSwitch);
+            Log.Information("============ DaxStudio Startup =============");
 
-                _eventAggregator = bootstrapper.GetEventAggregator();
-                // read command line arguments
-                app.ReadCommandLineArgs();
+            // check if the config file has been set to force software rendering
+            bool.TryParse(ConfigurationManager.AppSettings["ForceSoftwareRendering"], out var forceSoftwareRendering);
+            if (forceSoftwareRendering)
+                RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.Default;
 
-                // check if user is holding shift key down
-                bool isLoggingKeyDown = (System.Windows.Input.Keyboard.IsKeyDown(Constants.LoggingHotKey1)
-                                    || System.Windows.Input.Keyboard.IsKeyDown(Constants.LoggingHotKey2));
+            // then load Caliburn Micro bootstrapper
+            Log.Debug("Loading Caliburn.Micro bootstrapper");
+            AppBootstrapper bootstrapper = new AppBootstrapper(Assembly.GetAssembly(typeof(DaxStudioHost)), true);
 
-                app.Args().LoggingEnabledByHotKey = isLoggingKeyDown;
+            _eventAggregator = bootstrapper.GetEventAggregator();
+            // read command line arguments
+            App.ReadCommandLineArgs(startupArgs);
+
+            // ReadCommandLineArgs() clears App.Args() before parsing, which wipes the
+            // LoggingEnabledByHotKey flag set during ConfigureLogging(). Re-apply it so that
+            // IDaxStudioHost.DebugLogging (and the log level check below) reflect the Shift key.
+            App.Args().LoggingEnabledByHotKey = isLoggingKeyDown;
+
+            var settingProvider = IoC.Get<ISettingProvider>();
+            if (App.Args().Reset) settingProvider.Reset();
                 
-                var logCmdLineSwitch = app.Args().LoggingEnabled;
-                
+            // force control tooltips to display even if disabled
+            ToolTipService.ShowOnDisabledProperty.OverrideMetadata(
+                typeof(Control),
+                new FrameworkPropertyMetadata(true));
 
-                //if (RegistryHelper.IsFileLoggingEnabled() || isLoggingKeyDown || logCmdLineSwitch)
-                if (isLoggingKeyDown || logCmdLineSwitch)
+            // get the global options
+            _options = bootstrapper.GetOptions(); 
+            _options.Initialize();
+            _options.LoggingLevelSwitch = levelSwitch;
+            Log.Information("User Options initialized");
+
+            // if the cmdline or hotkey have not been set then read the log level from the options
+            if (!App.Args().LoggingEnabled) UpdateLoggingLevelFromOptions(_options, ref levelSwitch);
+
+            // check if we are running portable that we have write access to the settings
+            if (_options.IsRunningPortable)
+                if (CanWriteToSettings(settingProvider))
                 {
-                    levelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Debug;
-                    Log.Debug("Debug Logging Enabled");
+                    Log.Information(Constants.LogMessageTemplate, nameof(EntryPoint), nameof(Main), "Test for read/write access to Settings.json: PASS");
+                }
+                else
+                {
+                    Log.Error(Constants.LogMessageTemplate, nameof(EntryPoint),nameof(Main),"Test for read/write access to Settings.json: FAIL");
+
+                    ShowSettingPermissionErrorDialog();
+                    App.Shutdown(3);
+                    return; 
                 }
 
-                //RegistryHelper.IsFileLoggingEnabled();
+            // load selected theme
+            var themeManager = bootstrapper.GetThemeManager();
+            themeManager.SetTheme(_options.Theme);
+            Log.Information("ThemeManager configured");
 
-#if DEBUG
-                Serilog.Debugging.SelfLog.Enable(Console.Out);
-#endif
-                Log.Logger = log;
-                Log.Information("============ DaxStudio Startup =============");
-                //SsasAssemblyResolver.Instance.BuildAssemblyCache();
-                SystemInfo.WriteToLog();
-                if (isLoggingKeyDown) log.Information($"Logging enabled due to {Constants.LoggingHotKeyName} key being held down");
-                if (logCmdLineSwitch) log.Information("Logging enabled by Excel Add-in");
-                Log.Information("Startup Parameters Port: {Port} File: {FileName} LoggingEnabled: {LoggingEnabled}", app.Args().Port, app.Args().FileName, app.Args().LoggingEnabled);
-
-                AppDomain.CurrentDomain.AssemblyResolve += ResolveAssembly;
-
-                if (app.Args().TriggerCrashTest) throw new ArgumentException("Test Exception triggered by command line argument");
-
-                // force control tooltips to display even if disabled
-                ToolTipService.ShowOnDisabledProperty.OverrideMetadata(
-                    typeof(Control),
-                    new FrameworkPropertyMetadata(true));
-
-                app.Run();
-            }
-            catch (ArgumentOutOfRangeException argEx)
+            // log startup switches
+            if (_options.AnyExternalAccessAllowed())
             {
-                var st = new System.Diagnostics.StackTrace(argEx);
-                var sf = st.GetFrame(0);
-                if (sf.GetMethod().Name == "GetLineByOffset")
-                {
-                    if (_eventAggregator != null) _eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Warning, "Editor syntax highlighting attempted to scan byond the end of the current line"));
-                    log.Warning(argEx, "{class} {method} AvalonEdit TextDocument.GetLineByOffset: {message}", "EntryPoint", "Main", "Argument out of range exception");
-                }
+                var appArgs = App.Args().AsDictionaryForTelemetry();
+                Telemetry.TrackEvent("App.Startup", appArgs);
             }
-            catch (Exception ex)
-            {
-                Log.Fatal(ex, "Class: {0} Method: {1} Error: {2} Stack: {3}", "EntryPoint", "Main", ex.Message, ex.StackTrace);
-#if DEBUG 
-                MessageBox.Show(ex.Message, "DAX Studio Standalone unhandled exception");
-#else
-                // use CrashReporter.Net to send bug to DrDump
-                CrashReporter.ReportCrash(ex,"DAX Studio Standalone Fatal crash" );
-#endif
 
-            }
-            finally
+            // only used for testing of crash reporting UI
+            if (App.Args().TriggerCrashTest) throw new ArgumentException("Test Exception triggered by command line argument");
+
+            if (!App.Args().ShowHelp)
             {
-                Log.Information("============ DaxStudio Shutdown =============");
-                Log.CloseAndFlush();
+                // Default web requests like AAD Auth to use windows credentials for proxy auth
+                // Queued at Background priority so the dispatcher processes it after the
+                // first frame renders, avoiding a potential WPAD proxy auto-detection delay
+                // blocking the UI from appearing.
+                // Similarly we can configure the jumplist on a background thread rather than blocking the UI
+                App.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                    new System.Action(() =>
+                    {
+                        System.Net.WebRequest.DefaultWebProxy.Credentials = System.Net.CredentialCache.DefaultNetworkCredentials;
+                        JumpListHelper.ConfigureJumpList(App);
+                    }));
+
+                // Launch the User Interface
+                Log.Information("Launching User Interface");
+                App.Run();
             }
+            else if (helpRequested)
+            {
+                // When a WPF (windowed-subsystem) exe attaches to a parent
+                // console the shell has already returned its prompt, so its
+                // next prompt redraws on top of our last line. Posting an
+                // Enter to the console window forces the shell to render a
+                // fresh prompt on its own line after the help text.
+                ConsoleHandler.PostEnterToParentConsole();
+            }
+
+            levelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Information;
+            Log.Information("============ DaxStudio Shutdown =============");
+            Log.CloseAndFlush();
+            
         }
 
-        private static void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+        private static void UpdateLoggingLevelFromOptions(IGlobalOptions options, ref LoggingLevelSwitch levelSwitch)
         {
+            if (options.LoggingLevel >= levelSwitch.MinimumLevel) return;
+            Log.Information(Constants.LogMessageTemplate, nameof(EntryPoint), nameof(UpdateLoggingLevelFromOptions), $"Setting Logging level to {options.LoggingLevel}");
+            levelSwitch.MinimumLevel = options.LoggingLevel;
+        }
 
+        private static void ShowSettingPermissionErrorDialog()
+        {
+            var msg = "Write Access is denied on the settings.json file.\n\n" +
+                      "When running in portable mode DAX Studio needs Read/Write access to the current folder.\n\n"+ 
+                      "If you want to put the application in a protected location like 'c:\\Program Files' then you should use the installer.";
 
-            if (e.Exception is System.Runtime.InteropServices.COMException comException)
+            MessageBox.Show( msg, "Fatal Startup Error", MessageBoxButton.OK, MessageBoxImage.Error, MessageBoxResult.OK, MessageBoxOptions.DefaultDesktopOnly);
+            
+        }
+
+        private static bool ConfigureLogging(LoggingLevelSwitch levelSwitch)
+        {
+            var config = new LoggerConfiguration()
+                .ReadFrom.AppSettings()
+                .MinimumLevel.ControlledBy(levelSwitch);
+
+            var logPath = Path.Combine(ApplicationPaths.LogPath, Constants.StandaloneLogFileName);
+            config.WriteTo.File(logPath
+                , rollingInterval: RollingInterval.Day
+                , formatProvider: CultureInfo.InvariantCulture
+                );
+#if DEBUG
+            // if we are debugging write to the log window
+            config.WriteTo.DaxStudioOutput(formatProvider: CultureInfo.InvariantCulture);
+#endif
+            _log = config.CreateLogger();
+            Log.Logger = _log;
+
+            // check if user is holding shift key down
+            bool isLoggingKeyDown = (System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftShift)
+                                     || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightShift));
+
+            App.Args().LoggingEnabledByHotKey = isLoggingKeyDown;
+
+            var logCmdLineSwitch = App.Args().LoggingEnabled;
+            var isPreviewBuild = false;
+#if PREVIEW
+            isPreviewBuild = true;
+#endif
+
+#if DEBUG
+            Serilog.Debugging.SelfLog.Enable(Console.Out);
+#endif
+            // write basic information about the current PC to the log file
+            SystemInfo.WriteToLog();
+
+            if (isLoggingKeyDown) Log.Information($"Verbose Logging enabled due to {Constants.LoggingHotKeyName} key being held down");
+            if (isPreviewBuild) Log.Information($"Verbose Logging enabled due to being a PREVIEW build");
+            if (logCmdLineSwitch) Log.Information("Verbose Logging enabled by Excel Add-in");
+            Log.Information("CommandLine Args: {args}", Environment.GetCommandLineArgs());
+            Log.Information($"Portable Mode: {ApplicationPaths.IsInPortableMode}");
+
+            // Set the default logging level
+            if (isLoggingKeyDown || logCmdLineSwitch || isPreviewBuild)
             {
-                
-                switch (comException.ErrorCode)
-                {
-                    case -2147221037: // Data on clipboard is invalid (Exception from HRESULT: 0x800401D3 (CLIPBRD_E_BAD_DATA))
-                        e.Handled = true;
-                        if (_eventAggregator != null) _eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Warning, "CLIPBRD_E_BAD_DATA Error - Clipboard operation failed, please try again"));
-                        log.Warning(e.Exception, "{class} {method} COM Error while accessing clipboard: {message}", "EntryPoint", "App_DispatcherUnhandledException", "CLIPBRD_E_BAD_DATA");
-                        return;
-                    case -2147221040: // catch 0x800401D0 (CLIPBRD_E_CANT_OPEN) errors when wpf datagrid can't access clipboard 
-                        e.Handled = true;
-                        if (_eventAggregator != null) _eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Warning, "CLIPBRD_E_CANT_OPEN Error - Clipboard operation failed, please try again"));
-                        log.Warning(e.Exception, "{class} {method} COM Error while accessing clipboard: {message}", "EntryPoint", "App_DispatcherUnhandledException", "CLIPBRD_E_CANT_OPEN");
-                        return;
-                    case unchecked((int)0x8001010E)://2147549454): // 0x_8001_010E:
-                        e.Handled = true;
-                        if (_eventAggregator != null) _eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Warning, "RPC_E_WRONG_THREAD Error - Clipboard operation failed, please try again"));
-                        log.Warning(e.Exception, "{class} {method} COM Error while accessing clipboard: {message}", "EntryPoint", "App_DispatcherUnhandledException", "RPC_E_WRONG_THREAD");
-                        return;
-                    default:
-                        Log.Fatal(e.Exception, "{class} {method} Unhandled exception", "EntryPoint", "App_DispatcherUnhandledException");
-                        break;
-                }
+#if DEBUG
+                levelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Verbose;
+                Log.Debug("Verbose Logging Enabled");
 
+#else
+                levelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Debug;
+                Log.Debug("Debug Logging Enabled");
+#endif
             }
             else
             {
-                Log.Fatal(e.Exception, "{class} {method} Unhandled exception", "EntryPoint", "App_DispatcherUnhandledException");
-                // use CrashReporter.Net to send bug to DrDump
-                //CrashReporter.ReportCrash(e.Exception, "DAX Studio Standalone DispatcherUnhandledException crash");
+#if DEBUG
+                levelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Verbose;
+                Log.Information($"{levelSwitch.MinimumLevel} Logging Enabled due to running in debug mode");
+#else
+                Log.Information("Changing minimum log event to Warning");
+                levelSwitch.MinimumLevel = Serilog.Events.LogEventLevel.Warning;
+#endif
+            }
+
+            return isLoggingKeyDown;
+        }
+
+        private static bool CanWriteToSettings(ISettingProvider settingProvider)
+        {
+            
+            var fileLocation = settingProvider.SettingsFile;
+
+            try
+            {
+                // try to open the file in read/write access
+                using (File.Open(fileLocation, FileMode.OpenOrCreate, FileAccess.ReadWrite))
+                {
+                    Log.Debug(Constants.LogMessageTemplate,nameof(EntryPoint), nameof(CanWriteToSettings), "Settings file opened for read/write access");
+
+                    return true;
+                }
+            }
+#pragma warning disable CA1031 // Do not catch general exception types
+            catch
+#pragma warning restore CA1031 // Do not catch general exception types
+            {
+                // ignored
+            }
+
+            return false;
+        }
+
+        private static bool IsNotSet(object value)
+        {
+            switch (value)
+            {
+                case string s: return string.IsNullOrEmpty(s);
+                case bool b: return b == false;
+                case int i: return i == 0;
+            }
+            return false;
+        }
+
+        private static void TaskSchedulerOnUnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs e)
+        {
+            if (Application.Current?.Dispatcher?.HasShutdownStarted??true) return;
+            e.SetObserved();
+            Log.Error(e.Exception, "{class} {method} {message}", nameof(EntryPoint), nameof(TaskSchedulerOnUnobservedTaskException), "Unobserved task exception");
+        }
+
+        private static bool IsInvalidWindowHandleGetMessage(Exception ex)
+        {
+            const int ErrorInvalidWindowHandle = 1400;
+            if (!(ex is Win32Exception win32Exception) || win32Exception.NativeErrorCode != ErrorInvalidWindowHandle)
+                return false;
+
+            var stackTrace = ex.StackTrace ?? string.Empty;
+            return stackTrace.Contains("MS.Win32.UnsafeNativeMethods.GetMessageW", StringComparison.Ordinal)
+                && stackTrace.Contains("System.Windows.Threading.Dispatcher.GetMessage", StringComparison.Ordinal);
+        }
+
+        private static void CurrentDomainOnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            string msg = "DAX Studio Standalone CurrentDomainOnUnhandledException";
+            Exception ex = e.ExceptionObject as Exception;
+
+            if (ex == null)
+            {
+                App?.Shutdown(2);
+                return;
+            }
+
+            if (IsInvalidWindowHandleGetMessage(ex))
+            {
+                Log.Warning(ex, "{class} {method} Ignoring known WPF invalid HWND exception while shutting down",
+                    nameof(EntryPoint), nameof(CurrentDomainOnUnhandledException));
+                App?.Shutdown(0);
+                return;
+            }
+
+            if ((Application.Current?.Dispatcher?.HasShutdownStarted ?? false))
+            {
+                Log.Error(ex, nameof(EntryPoint), nameof(CurrentDomainOnUnhandledException), "Error during shutdown");
+                App?.Shutdown(2);
+                return;
+            }
+
+            // check that we are not already shutting down
+            var stackTrace = ex.StackTrace ?? string.Empty;
+            if (!stackTrace.Contains("System.Windows.Threading.Dispatcher.ShutdownImpl", StringComparison.Ordinal) 
+                && !(Application.Current?.Dispatcher?.HasShutdownStarted??true))
+                    LogFatalCrash(ex, msg, _options);
+            
+            if (App?.Dispatcher?.CheckAccess()??true)
+            {
+                App.Shutdown(2);
+            }
+            else
+            {
+                App.Dispatcher.Invoke(() => App.Shutdown(2));
             }
         }
 
-        private static void ReadCommandLineArgs(this Application app)
+        private static void LogFatalCrash(Exception ex, string msg, IGlobalOptions options)
         {
-            string[] args = Environment.GetCommandLineArgs();
+            // add a property to the application indicating that we have crashed
+            if (!App.Properties.Contains("HasCrashed"))
+                App.Properties.Add("HasCrashed", true);
 
-            var p = new FluentCommandLineParser();
-            p.Setup<int>('p', "port")
-                .Callback(port => app.Args().Port = port);
+            UpdateErrorForLoaderExceptions(ref msg, ex);
 
-            p.Setup<bool>('l', "log")
-                .Callback(log => app.Args().LoggingEnabledByCommandLine = log)
-                .WithDescription("Enable Debug Logging")
-                .SetDefault(false);
+            Log.Error(ex, "{class} {method} {message}", nameof(EntryPoint), nameof(LogFatalCrash), msg);
+            Log.CloseAndFlush();
 
-            p.Setup<string>('f', "file")
-                .Callback(file => app.Args().FileName = file)
-                .WithDescription("Name of file to open");
+            if (_options?.BlockCrashReporting??true)
+            {
+                Application.Current.Dispatcher.Invoke(()=>{
+                    // Show a dialog to let the user know there was a fatal crash
+                    // but we are unable to automatically log the crash due to their privacy settings
+                    var blockedDlg = new CrashReportingBlockedDialogView {ErrorMessage = {Text = $"{ex.Message}\n\n{ex.StackTrace}"}};
+                    blockedDlg.ShowDialog();
+                });
 
-            p.Setup<bool>('c', "crashtest")
-                .Callback(crashtest => app.Args().TriggerCrashTest = crashtest)
-                .WithDescription("Used for testing the Crash Test reporting")
-                .SetDefault(false);
-                
+                return;
+            }
 
-            p.Parse(args);
-            
+            Execute.OnUIThread(() => {
+
+                // Application must be shutting down so just exit
+                if (Application.Current == null || App == null) return;
+
+                // add a property to the application indicating that we have crashed
+                if (!App.Properties.Contains("HasCrashed"))
+                    App.Properties.Add("HasCrashed", true);
+
+                if ((Application.Current?.Dispatcher?.CheckAccess()??true) == true)
+                {
+                    CrashReporter.ReportCrash(ex, msg);
+                }
+                else
+                {
+                    Application.Current.Dispatcher.Invoke(() => CrashReporter.ReportCrash(ex, msg));
+                }
+            });
         }
+
+        private static void UpdateErrorForLoaderExceptions(ref string msg, Exception ex)
+        {
+            // if this is a type load exception we need to list out the LoaderException messages.
+            if (ex is ReflectionTypeLoadException loaderEx)
+            {
+
+                var loaderExceptions = loaderEx.LoaderExceptions;
+                var sbError = new StringBuilder();
+                foreach (var innerEx in loaderEx.LoaderExceptions)
+                {
+                    sbError.AppendLine(innerEx.Message);
+                }
+                msg += '\n' +  sbError.ToString();
+            }
+        }
+
+        private static int _inUnhandledExceptionHandler;
+
+        private static void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+        {
+            // Reentrancy guard: if the handler itself (or any code it invokes) throws another
+            // unhandled exception on the dispatcher, we must not recurse back into ourselves —
+            // doing so risks stack overflow, hangs in the crash-reporter, or a runaway loop of
+            // crash dialogs. Mark the exception handled and fail fast instead.
+            if (System.Threading.Interlocked.Exchange(ref _inUnhandledExceptionHandler, 1) != 0)
+            {
+                try
+                {
+                    Log.Fatal(e.Exception, "{class} {method} Reentrant unhandled dispatcher exception — terminating immediately",
+                        nameof(EntryPoint), nameof(App_DispatcherUnhandledException));
+                }
+                catch
+                {
+                    // intentionally swallowed — we're already in a fatal failure path
+                }
+                e.Handled = true;
+                Environment.FailFast("DAX Studio: reentrant unhandled dispatcher exception", e.Exception);
+                return;
+            }
+
+            try
+            {
+                if ((Application.Current?.Dispatcher?.HasShutdownStarted??false))
+                {
+                    Log.Error(e.Exception, nameof(EntryPoint), nameof(App_DispatcherUnhandledException), "Error during shutdown");
+                    App?.Shutdown(3);
+                    return;
+                }
+
+                if (e.Exception is System.Runtime.InteropServices.COMException comException)
+                {
+                
+                    switch (comException.ErrorCode)
+                    {
+                        case -2147221037: // Data on clipboard is invalid (Exception from HRESULT: 0x800401D3 (CLIPBRD_E_BAD_DATA))
+                            e.Handled = true;
+                            _eventAggregator?.PublishAsync(new OutputMessage(MessageType.Warning, "CLIPBRD_E_BAD_DATA Error - Clipboard operation failed, please try again"));
+                            _log.Warning(e.Exception, "{class} {method} COM Error while accessing clipboard: {message}", "EntryPoint", "App_DispatcherUnhandledException", "CLIPBRD_E_BAD_DATA");
+                            return;
+                        case -2147221040: // catch 0x800401D0 (CLIPBRD_E_CANT_OPEN) errors when wpf DataGrid can't access clipboard 
+                            e.Handled = true;
+                            _eventAggregator?.PublishAsync(new OutputMessage(MessageType.Warning, "CLIPBRD_E_CANT_OPEN Error - Clipboard operation failed, please try again"));
+                            _log.Warning(e.Exception, "{class} {method} COM Error while accessing clipboard: {message}", "EntryPoint", "App_DispatcherUnhandledException", "CLIPBRD_E_CANT_OPEN");
+                            return;
+                        case unchecked((int)0x8001010E)://2147549454): // 0x_8001_010E:
+                            e.Handled = true;
+                            _eventAggregator?.PublishAsync(new OutputMessage(MessageType.Warning, "RPC_E_WRONG_THREAD Error - Clipboard operation failed, please try again"));
+                            _log.Warning(e.Exception, "{class} {method} COM Error while accessing clipboard: {message}", "EntryPoint", "App_DispatcherUnhandledException", "RPC_E_WRONG_THREAD");
+                            return;
+                        // WPF MIL composition / render-thread failures. These are raised by the
+                        // WPF render thread (driver glitch / TDR, GPU pressure, DPI or monitor
+                        // change, sleep/wake/RDP transitions) — not by application code. WPF
+                        // can usually re-create the render target on the next paint, so swallow
+                        // them with a warning instead of shutting the whole app down.
+                        case unchecked((int)0x88980406): // UCEERR_RENDERTHREADFAILURE
+                        case unchecked((int)0x88980403): // UCEERR_DISPLAYSTATEINVALID
+                        case unchecked((int)0x88980404): // UCEERR_NOTIFICATIONSDROPPED
+                            e.Handled = true;
+                            _log.Warning(e.Exception,
+                                "{class} {method} WPF render-thread COM failure (non-fatal, allowing recovery): {hresult}",
+                                "EntryPoint", "App_DispatcherUnhandledException",
+                                $"0x{comException.ErrorCode:X8}");
+                            _eventAggregator?.PublishAsync(new OutputMessage(MessageType.Warning,
+                                "A graphics rendering error occurred. If this happens repeatedly, please update your video driver or restart DAX Studio."));
+                            return;
+                        default:
+                            if (e.Exception.Message == "A drag operation is already in progress")
+                            {
+                                _eventAggregator?.PublishAsync(new OutputMessage(MessageType.Warning, $"{e.Exception.Message}\nPlease retry the operation"));
+                                _log.Warning(e.Exception, "{class} {method} COM Error while doing DragDrop: {message}", "EntryPoint", "App_DispatcherUnhandledException", e.Exception.Message);
+                                return;
+                            }
+
+                            // for all other unhandled Exceptions we log them and exit here as we don't know if the app is in a valid state
+                            Log.Fatal(e.Exception, "{class} {method} Unhandled exception", "EntryPoint", "App_DispatcherUnhandledException");
+                            LogFatalCrash(e.Exception, "DAX Studio Standalone DispatcherUnhandledException Unhandled COM Exception",_options);
+                            e.Handled = true;
+                        
+                            Application.Current.Shutdown(1);
+                            break;
+                    }
+
+                }
+                else if (e.Exception is UnauthorizedAccessException
+                    && e.Exception.StackTrace != null
+                    && e.Exception.StackTrace.Contains("GridViewColumnHeader.GetCursor"))
+                {
+                    // Known WPF framework bug: temp cursor file deletion fails due to permissions/locking
+                    e.Handled = true;
+                    _log.Warning(e.Exception, "{class} {method} {message}", "EntryPoint",
+                        "App_DispatcherUnhandledException",
+                        "WPF GridViewColumnHeader cursor temp file access denied (non-fatal)");
+                    return;
+                }
+                else if (e.Exception is InvalidOperationException
+                    && e.Exception.StackTrace != null
+                    && e.Exception.StackTrace.Contains("Caliburn.Micro.WindowConductor")
+                    && (e.Exception.Message?.Contains("while a Window is closing") ?? false))
+                {
+                    // Known Caliburn.Micro race: the conductor's async Closing continuation
+                    // reaches Window.Close() after WPF has already started closing the window
+                    // (typically during shutdown or when two close paths overlap). The window
+                    // is closing anyway, so the exception is meaningless — swallow it to avoid
+                    // producing a cascading crash dialog on top of an in-flight close.
+                    e.Handled = true;
+                    _log.Warning(e.Exception, "{class} {method} {message}", "EntryPoint",
+                        "App_DispatcherUnhandledException",
+                        "Caliburn.Micro WindowConductor close race (non-fatal)");
+                    return;
+                }
+                else
+                {
+                    LogFatalCrash(e.Exception, "DAX Studio Standalone App_DispatcherUnhandledException crash",_options);
+                    e.Handled = true;
+                    App?.Shutdown(3);
+                }
+            }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _inUnhandledExceptionHandler, 0);
+            }
+        }
+
+        private static void ReadCommandLineArgs(this Application app, string[] args)
+        {
+            app.Args().Clear();
+            Application.Current.Args().Parse(args);
+        }
+
+
+        private static void AddResourceDictionary(this Application app, string src)
+        {
+            app.Resources.MergedDictionaries.Add(new ResourceDictionary() { Source = new Uri(src, UriKind.RelativeOrAbsolute) });
+        }
+
+        private static void ProcessMessage(NamedPipeServerStream pipe, Application app)
+        {
+            var inargs = DaxStudio.Common.WMHelper.DeserializeStringArray(pipe);
+            app.ReadCommandLineArgs(inargs);
+            if (!string.IsNullOrEmpty(app.Args().FileName))
+            {
+                _eventAggregator.PublishAsync(new OpenDaxFileEvent(app.Args().FileName));
+            }
+            else
+            {
+                _eventAggregator.PublishAsync(new NewDocumentEvent(null));
+            }
+        }
+
+
     }
 }

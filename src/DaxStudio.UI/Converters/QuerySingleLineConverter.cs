@@ -7,17 +7,22 @@ using System.Text.RegularExpressions;
 namespace DaxStudio.UI.Converters {
     class QuerySingleLineConverter : IValueConverter {
         const string searchSet = @"SET.*;";
-        const string searchTab = @"\r\n\t+|\n\t+|\r\t+|\r\n|\r|\n|\t+";
+        const string searchTab = @"\r\n\t+|\n\t+|\r\t+|\r\n|\r|\n|\t+|\s{2,}";
 
         static Regex setRemoval = new Regex(searchSet, RegexOptions.Compiled);
         static Regex tabRemoval = new Regex(searchTab, RegexOptions.Compiled);
 
+        private const int MaxDisplayLength = 500;
+
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture) {
             var sc = value as string;
             if (sc != null) {
+                // Truncate before applying regex to avoid freezing on very large queries
+                bool truncated = sc.Length > MaxDisplayLength;
+                if (truncated) sc = sc.Substring(0, MaxDisplayLength);
                 string s1 = setRemoval.Replace(sc, "");
                 string s2 = tabRemoval.Replace(s1, " ");
-                return s2.Trim();
+                return truncated ? s2.Trim() + " …" : s2.Trim();
             }
             return System.Windows.Data.Binding.DoNothing;
         }

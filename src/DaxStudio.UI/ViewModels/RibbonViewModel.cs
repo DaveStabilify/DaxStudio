@@ -1,7 +1,8 @@
-﻿using ADOTabular.AdomdClientWrappers;
 using Caliburn.Micro;
 using DaxStudio.Interfaces;
 using DaxStudio.QueryTrace.Interfaces;
+using DaxStudio.Core.Events;
+using DaxStudio.Core.Extensions;
 using DaxStudio.UI.Events;
 using DaxStudio.UI.Extensions;
 using DaxStudio.UI.Interfaces;
@@ -14,169 +15,268 @@ using System.Collections.ObjectModel;
 using System.ComponentModel.Composition;
 using System.Linq;
 using System.Windows;
+using System.Windows.Data;
 using System.ComponentModel;
+using System.Net;
+using System.Reflection;
+using Microsoft.AnalysisServices.AdomdClient;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Drawing;
+using ADOTabular;
+using DaxStudio.Interfaces.Enums;
+using System.Windows.Threading;
+using System.Windows.Shell;
+using DaxStudio.Core.Model;
+using DaxStudio.Core.Interfaces;
+using DaxStudio.Core.Trace;
 
 namespace DaxStudio.UI.ViewModels
 {
     [Export(typeof(RibbonViewModel))]
     public class RibbonViewModel : PropertyChangedBase
+        , IHandle<ActivateDocumentEvent>
+        , IHandle<AllDocumentsClosedEvent>
+        , IHandle<ApplicationActivatedEvent>
+        , IHandle<ConnectFailedEvent>
         , IHandle<ConnectionPendingEvent>
         , IHandle<CancelConnectEvent>
-        , IHandle<ActivateDocumentEvent>
-        , IHandle<QueryFinishedEvent>
-        , IHandle<ApplicationActivatedEvent>
+        , IHandle<ChangeThemeEvent>
+        , IHandle<DatabaseChangedEvent>
+        , IHandle<DocumentConnectionUpdateEvent>
         , IHandle<FileOpenedEvent>
         , IHandle<FileSavedEvent>
+        , IHandle<QueryFinishedEvent>
+        , IHandle<RefreshOutputTargetsEvent>
         , IHandle<TraceChangingEvent>
         , IHandle<TraceChangedEvent>
         , IHandle<TraceWatcherToggleEvent>
-        , IHandle<DocumentConnectionUpdateEvent>
         , IHandle<UpdateGlobalOptions>
-        , IHandle<AllDocumentsClosedEvent>
-        , IHandle<RefreshOutputTargetsEvent>
-    //        , IViewAware
+        , IHandle<UpdateHotkeys>
+        , IHandle<SetRunStyleEvent>
+        , IHandle<ViewMetricsCompleteEvent>
+
+        //        , IViewAware
     {
         private readonly IDaxStudioHost _host;
         private readonly IEventAggregator _eventAggregator;
         private readonly IWindowManager _windowManager;
-        private bool _isDocumentActivating = false;
-        private bool _isConnecting = false;
-        private string _sqlProfilerCommand = "";
+        private bool _isDocumentActivating;
+        private bool _isConnecting;
+        private readonly string _sqlProfilerCommand = string.Empty;
 
-        private const string urlDaxStudioWiki = "http://daxstudio.org";
-        private const string urlPowerPivotForum = "http://social.msdn.microsoft.com/Forums/sqlserver/en-US/home?forum=sqlkjpowerpivotforexcel";
-        private const string urlSsasForum = "http://social.msdn.microsoft.com/Forums/sqlserver/en-US/home?forum=sqlanalysisservices";
+        private const string urlDaxStudioWiki = "https://daxstudio.org";
+        private const string urlPowerPivotForum = "https://social.msdn.microsoft.com/Forums/sqlserver/en-US/home?forum=sqlkjpowerpivotforexcel";
+        private const string urlSsasForum = "https://docs.microsoft.com/en-us/answers/topics/sql-server-analysis-services.html";
+        private const string urlPbiDesktopForum = "https://community.powerbi.com/t5/Desktop/bd-p/power-bi-designer";
+        private const string urlDaxForum = "https://community.powerbi.com/t5/DAX-Commands-and-Tips/bd-p/DAXCommands";
+        private const string urlGithubBugReportPrefix = @"https://github.com/DaxStudio/DaxStudio/issues/new?labels=from+app&template=bug_report.md&body=";
+        private const string urlGithubBugReportSuffix = @"%23%23%20Summary%20of%20Issue%0A%0A%0A%23%23%20Steps%20to%20Reproduce%0A1.%0A2.";
+        private const string urlGithubFeatureRequest = @"https://github.com/DaxStudio/DaxStudio/issues/new?assignees=&labels=from+app&template=feature_request.md&title=";
 
+        internal void ToggleTheme()
+        {
+            switch( this.Theme)
+            {
+                case UITheme.Light: 
+                    Theme = UITheme.Dark;
+                    break;
+                case UITheme.Dark:
+                    Theme = UITheme.Auto;
+                    break;
+                default: 
+                    Theme = UITheme.Light;
+                    break;
+            }
+        }
+
+        public string ThemeImageResource => Theme == UITheme.Auto? "file_auto_themeDrawingImage":"file_themeDrawingImage";
+
+
+
+        private const string urlGithubDiscussions = @"https://github.com/DaxStudio/DaxStudio/discussions";
+        private const string urlSponsors = @"https://daxstudio.org/sponsors/";
+        private ISettingProvider SettingProvider;
         [ImportingConstructor]
-        public RibbonViewModel(IDaxStudioHost host, IEventAggregator eventAggregator, IWindowManager windowManager, IGlobalOptions options)
+        public RibbonViewModel(IDaxStudioHost host, IEventAggregator eventAggregator, IWindowManager windowManager, IGlobalOptions options, ISettingProvider settingProvider)
         {
             _eventAggregator = eventAggregator;
-            _eventAggregator.Subscribe(this);
+            _eventAggregator.SubscribeOnUIThread(this);
             _host = host;
             _windowManager = windowManager;
+            SettingProvider = settingProvider;
             Options = options;
+            _theme = Options.Theme;
             UpdateGlobalOptions();
             CanCut = true;
             CanCopy = true;
             CanPaste = true;
             _sqlProfilerCommand = SqlProfilerHelper.GetSqlProfilerLaunchCommand();
-            RecentFiles = RegistryHelper.GetFileMRUListFromRegistry();
+            RecentFiles = SettingProvider.GetFileMRUList();
+            RecentFilesView = CollectionViewSource.GetDefaultView(RecentFiles);
+            RecentFilesView.Filter = RecentFileFilterPredicate;
             InitRunStyles();
+            ClearCacheAuto = Options.SetClearCacheAsDefaultRunStyle;
         }
+
+
 
         private void InitRunStyles()
         {
-            RunStyles = new List<RunStyle>();
-            SelectedRunStyle = new RunStyle("Run Query", RunStyleIcons.RunOnly, false, "Executes the query and sends the results to the selected output");
-            RunStyles.Add(SelectedRunStyle);
-            RunStyles.Add(new RunStyle("Clear Cache then Run", RunStyleIcons.ClearThenRun, true, "Clears the database cache, then executes the query and sends the results to the selected output"));
+            // populate run styles
+            RunStyles.Add(new RunStyle("Run Query", RunStyleIcons.RunOnly,  "Executes the text in the Editor and sends the results to the selected output"));
+            RunStyles.Add(new RunStyle("Run Query Builder", RunStyleIcons.RunBuilder,"Executes the Query Builder and sends the results to the selected output"));
+
+            // set default run style
+            var defaultRunStyle = RunStyleIcons.RunOnly;
+
+            SelectedRunStyle = RunStyles.FirstOrDefault(rs => rs.Icon == defaultRunStyle);
         }
 
-        public List<RunStyle> RunStyles { get; set; }
+        public ObservableCollection<RunStyle> RunStyles { get; } = new ObservableCollection<RunStyle>();
         private RunStyle _selectedRunStyle;
         public RunStyle SelectedRunStyle {
-            get { return _selectedRunStyle; }
+            get => _selectedRunStyle;
             set { _selectedRunStyle = value;
                 NotifyOfPropertyChange(() => SelectedRunStyle);
+                _eventAggregator?.PublishAsync(new RunStyleChangedEvent(SelectedRunStyle));
+                //RunQuery(); // TODO if we change run styles should we immediately run the query with the new style??
             } }
         public IGlobalOptions Options { get; private set; }
-        public Visibility OutputGroupIsVisible
+        public Visibility OutputGroupIsVisible => _host.IsExcel ? Visibility.Visible : Visibility.Collapsed;
+
+        public async Task NewQuery()
         {
-            get { return _host.IsExcel ? Visibility.Visible : Visibility.Collapsed; }
+            await _eventAggregator.PublishAsync(new NewDocumentEvent(SelectedTarget));
         }
 
-        public Visibility ServerTimingsIsChecked
-        {
-            get
-            {
-                // TODO - Check if ServerTiming Trace is checked - Update on check change
-                //return _traceStatus == QueryTraceStatus.Started ? Visibility.Visible : Visibility.Collapsed; 
-                return Visibility.Visible;
-            }
-        }
-
-        public void NewQuery()
-        {
-            _eventAggregator.PublishOnUIThread(new NewDocumentEvent(SelectedTarget));
-        }
-
-        public void NewQueryWithCurrentConnection()
+        public void NewQueryWithCurrentConnection(bool copyContent = false)
         {
             if (ActiveDocument == null) return;
-
-            var connectionString = "";
-            if (ActiveDocument.IsConnected)
-                connectionString = ActiveDocument.ConnectionStringWithInitialCatalog;
-            _eventAggregator.PublishOnUIThread(new NewDocumentEvent(SelectedTarget, ActiveDocument));
+            _eventAggregator.PublishAsync(new NewDocumentEvent(SelectedTarget, ActiveDocument, copyContent)).ContinueWith((precedent) => { 
+                if (precedent.IsFaulted)
+                {
+                    var msg = "Error opening new document with current connection";
+                    Log.Error(precedent.Exception, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(NewQueryWithCurrentConnection), msg);
+                    _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"{msg}\n{precedent.Exception.Message}"));
+                }
+            });
         }
 
-        public bool CanCommentSelection { get => ActiveDocument != null; }
+        public bool CanNewQueryWithCurrentConnection => ActiveDocument != null && ActiveDocument.IsConnected;
+
+        public bool CanCommentSelection => ActiveDocument != null;
+
         public void CommentSelection()
         {
-            _eventAggregator.PublishOnUIThread(new CommentEvent(true));
+            _eventAggregator.PublishAsync(new CommentEvent(true));
         }
 
+        public string CommentSelectionTitle => $"Comment ({Options.HotkeyCommentSelection})";
+
+        public bool CanMergeParameters => ActiveDocument != null;
         public void MergeParameters()
         {
             ActiveDocument?.MergeParameters();
         }
 
-        public bool CanFormatQueryStandard { get => ActiveDocument != null; }
+        public bool CanFormatQueryStandard => ActiveDocument != null && !Options.BlockExternalServices;
 
         public void FormatQueryStandard()
         {
             ActiveDocument?.FormatQuery( false );
         }
+
+        public string FormatQueryTitle => $"Format Query ({Options.HotkeyFormatQueryStandard})";
         public void FormatQueryAlternate()
         {
             ActiveDocument?.FormatQuery( true );
         }
 
-        public bool CanUndo { get => ActiveDocument != null; }
+        public string FormatQueryStandardTitle => Options.DefaultDaxFormatStyle.GetDescription() + " (Default) (" + Options.HotkeyFormatQueryStandard + ")";
+
+        public string FormatQueryAlternateTitle { get 
+            {
+                string title;
+                if (Options.DefaultDaxFormatStyle == DaxStudio.Interfaces.Enums.DaxFormatStyle.LongLine)
+                {
+                    title = DaxStudio.Interfaces.Enums.DaxFormatStyle.ShortLine.GetDescription();
+                }
+                else
+                {
+                    title = DaxStudio.Interfaces.Enums.DaxFormatStyle.LongLine.GetDescription();
+                }
+                return title + " (" + Options.HotkeyFormatQueryAlternate + ")";
+            } 
+        }
+
+        public string FormatQueryDisabledReason
+        {
+            get
+            {
+                if (Options.BlockExternalServices) return "Access to External Services blocked in Options privacy settings";
+                if (ActiveDocument == null) return "No Active Document";
+                return "Not disabled";
+            }
+        }
+
+        public bool CanUndo => ActiveDocument != null;
+
         public void Undo()
         {
             ActiveDocument?.Undo();
         }
 
-        public bool CanRedo { get => ActiveDocument != null; }
+        public bool CanRedo => ActiveDocument != null;
+
         public void Redo()
         {
             ActiveDocument?.Redo();
         }
-        public bool CanUncommentSelection { get => ActiveDocument != null; }
+        public bool CanUncommentSelection => ActiveDocument != null;
+
         public void UncommentSelection()
         {
-            _eventAggregator.PublishOnUIThread(new CommentEvent(false));
+            _eventAggregator.PublishAsync(new CommentEvent(false));
         }
+        public string UncommentSelectionTitle => $"Uncomment ({Options.HotkeyUnCommentSelection})";
+        public bool CanToUpper => ActiveDocument != null;
 
         public void ToUpper()
         {
-            _eventAggregator.PublishOnUIThread(new SelectionChangeCaseEvent(ChangeCase.ToUpper));
+            _eventAggregator.PublishAsync(new SelectionChangeCaseEvent(ChangeCase.ToUpper));
         }
+        public string ToUpperTitle => $"To Upper ({Options.HotkeyToUpper})";
+
+        public bool CanToLower => ActiveDocument != null;
 
         public void ToLower()
         {
-            _eventAggregator.PublishOnUIThread(new SelectionChangeCaseEvent(ChangeCase.ToLower));
+            _eventAggregator.PublishAsync(new SelectionChangeCaseEvent(ChangeCase.ToLower));
         }
-
+        public string ToLowerTitle => $"To Lower ({Options.HotkeyToLower})";
         public void RunQuery()
         {
-            _queryRunning = true;
+            
             NotifyOfPropertyChange(() => CanRunQuery);
             NotifyOfPropertyChange(() => CanCancelQuery);
             NotifyOfPropertyChange(() => CanClearCache);
             NotifyOfPropertyChange(() => CanRefreshMetadata);
             NotifyOfPropertyChange(() => CanConnect);
-            _eventAggregator.PublishOnUIThread(new RunQueryEvent(SelectedTarget, SelectedRunStyle.ClearCache) );
+
+            var runStyle = SelectedRunStyle;
+            runStyle.ClearCache = ClearCacheAuto;
+            _eventAggregator.PublishAsync(new RunQueryEvent(SelectedTarget, runStyle) );
 
         }
+        public string RunQueryTitle => $"Run Query ({Options.HotkeyRunQuery})";
 
         public string RunQueryDisableReason
         {
             get
             {
                 if (ActiveDocument == null) return "There is no active Query window";
-                if ( _queryRunning) return  "A query is currently executing";
+                if ( QueryRunning) return  "A query is currently executing";
                 if (!ActiveDocument.IsConnected) return "Query window not connected to a model";
                 if (_traceStatus == QueryTraceStatus.Starting) return "Waiting for Trace to start";
                 if (_traceStatus == QueryTraceStatus.Stopping) return "Waiting for Trace to stop";
@@ -192,47 +292,66 @@ namespace DaxStudio.UI.ViewModels
                 if (!ActiveDocument.IsConnected) return "Query window not connected to a model";
                 if (_traceStatus == QueryTraceStatus.Starting) return "Waiting for Trace to start";
                 if (_traceStatus == QueryTraceStatus.Stopping) return "Waiting for Trace to stop";
-                if (!_queryRunning) return "A query is not currently executing";
+                if (!QueryRunning) return "A query is not currently executing";
                 return "not disabled";
             }
         }
 
-        public bool CanRunQuery
-        {
-            get
-            {
-                return !_queryRunning 
-                    && (ActiveDocument != null && ActiveDocument.IsConnected) 
-                    && (_traceStatus == QueryTraceStatus.Started || _traceStatus == QueryTraceStatus.Stopped);
-            }
-        }
+        private bool IsTraceChanging() { return _traceStatus == QueryTraceStatus.Starting || _traceStatus == QueryTraceStatus.Stopping || _traceStatus == QueryTraceStatus.Unknown; }
+
+        public bool CanRunQuery =>
+            !QueryRunning 
+            && (ActiveDocument != null && ActiveDocument.IsConnected) 
+            && !ActiveDocument.ShowMeasureExpressionEditor
+            && !IsTraceChanging();
+
+        public bool CanDisplayQueryBuilder =>
+            !QueryRunning
+            && (ActiveDocument != null && ActiveDocument.IsConnected)
+            && !IsTraceChanging();
+
+        public bool CanRunBenchmark =>
+            !QueryRunning
+            && (ActiveDocument != null && ActiveDocument.IsConnected && ActiveDocument.IsAdminConnection)
+            && !IsTraceChanging();
+
+
+        public bool CanRunServerFEBenchmark =>
+            !QueryRunning
+            && (ActiveDocument != null && ActiveDocument.IsConnected && ActiveDocument.IsAdminConnection)
+            && !IsTraceChanging();
 
         public void CancelQuery()
         {
-            _eventAggregator.PublishOnUIThread(new CancelQueryEvent());
+            _eventAggregator.PublishAsync(new CancelQueryEvent());
         }
 
-        public bool CanCancelQuery
-        {
-            get { return !CanRunQuery && (ActiveDocument != null && ActiveDocument.IsConnected); }
-        }
+        public bool CanCancelQuery => !CanRunQuery && (ActiveDocument != null && ActiveDocument.IsConnected);
 
-        public bool CanClearCache
-        {
-            get { return CanRunQuery && (ActiveDocument != null && ActiveDocument.IsAdminConnection); }
-        }
+        public bool CanClearCache => CanRunQuery && (ActiveDocument != null && ActiveDocument.IsAdminConnection);
 
         public string ClearCacheDisableReason
         {
             get 
             { 
+                if (ActiveDocument == null) return "Query window not connected to a model";
                 if (!ActiveDocument.IsAdminConnection) return "Only a server administrator can run the clear cache command";
-                if (_queryRunning) return "A query is currently executing";
+                if (QueryRunning) return "A query is currently executing";
                 if (!ActiveDocument.IsConnected) return "Query window not connected to a model";
                 if (_traceStatus == QueryTraceStatus.Starting) return "Waiting for Trace to start";
                 if (_traceStatus == QueryTraceStatus.Stopping) return "Waiting for Trace to stop";
                 return "Cannot clear the cache while a query is currently running";
             }
+        }
+
+        public bool CanClearCacheAuto => IsActiveDocumentConnected;
+
+        public bool _clearCacheAuto = false;
+        public bool ClearCacheAuto { get => _clearCacheAuto;
+            set { 
+                _clearCacheAuto = value;
+                NotifyOfPropertyChange();
+            } 
         }
 
         public void ClearCache()
@@ -252,138 +371,206 @@ namespace DaxStudio.UI.ViewModels
         {
             ActiveDocument?.SaveAs();
         }
-        
 
-        public void Connect()
+        public void SaveAsDaxx()
         {
-            if (ActiveDocument == null) NewQuery();
-            else ActiveDocument.ChangeConnection();
+            ActiveDocument?.SaveAs(Enums.SaveAsExtension.daxx);
+        }
+
+        public async void Connect()
+        {
+            if (ActiveDocument == null) await NewQuery();
+            else await ActiveDocument.ChangeConnectionAsync();
         }
 
         //private bool _canConnect;
-        public bool CanConnect
-        {
-            get {
-                return !_queryRunning && !_isConnecting && ActiveDocument != null 
-                    && (_traceStatus == QueryTraceStatus.Started || _traceStatus == QueryTraceStatus.Stopped);
-            }
-        }
+        public bool CanConnect =>
+            ActiveDocument != null 
+            && !QueryRunning 
+            && !_isConnecting 
+            && !IsTraceChanging();
 
         public ShellViewModel Shell { get; set; }
 
-        public void Exit()
+        public void Exit(FrameworkElement view)
         {
-            Shell.TryClose();
-        }
-
-        public void Open()
-        {
-            _eventAggregator.PublishOnUIThread(new OpenFileEvent());
-
-        }
-
-        private void RefreshConnectionDetails(IConnection connection, string databaseName)
-        {
-            var doc = ActiveDocument;
-            
-            if (connection == null)
+            try
             {
-                Log.Debug("{Class} {Event} {Connection} {selectedDatabase}", "RibbonViewModel", "RefreshConnectionDetails", "<null>", "<null>");
-                _isConnecting = false;
-                NotifyOfPropertyChange(() => CanRunQuery);
-                NotifyOfPropertyChange(() => CanClearCache);
-                NotifyOfPropertyChange(() => CanRefreshMetadata);
-                NotifyOfPropertyChange(() => CanConnect);
-                TraceWatchers.DisableAll();
+                Fluent.Backstage backstage = GetBackStageParent(view) as Fluent.Backstage;
+                backstage.IsOpen = false;
+                var window = (Window)Shell.GetView();
+                window?.Close();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(Exit), "Error closing application");
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error closing application: {ex.Message}"));
+            }
+
+        }
+
+        public async void Open(FrameworkElement view)
+        {
+            Fluent.Backstage backstage = GetBackStageParent(view) as Fluent.Backstage;
+
+            // Show open file dialog
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                FileName = "Document",
+                DefaultExt = ".dax",
+                Filter = "DAX documents|*.dax;*.msdax;*.daxx;*.vpax|DAX Studio documents|*.dax;*.daxx;*.vpax|SSMS DAX documents|*.msdax"
+            };
+
+            var result = dlg.ShowDialog();
+            if (result != true) 
+            {
+                backstage.IsOpen = false;
                 return;
             }
 
             try
             {
-                Log.Debug("{Class} {Event} {ServerName} {selectedDatabase}", "RibbonViewModel", "RefreshConnectionDetails", connection.ServerName, databaseName);                
+                var fileName = dlg.FileName;
+
+                // Show loading indicator in backstage (same pattern as OpenRecentFile)
+                _backstageToClose = backstage;
+                IsLoadingRecentFile = true;
+                LoadingFileName = System.IO.Path.GetFileName(fileName);
+                await Dispatcher.Yield();
+                await Task.Delay(50);
+
+                // Load the file (FileOpenedEvent will be published by DocumentViewModel.LoadFile on completion)
+                await Dispatcher.CurrentDispatcher.InvokeAsync(async () =>
+                {
+                    await _eventAggregator.PublishAsync(new OpenDaxFileEvent(fileName));
+                }, DispatcherPriority.Background);
             }
             catch (Exception ex)
             {
-                //_eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, ex.Message));
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(Open), "Error opening file");
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error opening file: {ex.Message}"));
+                if (backstage != null)
+                    backstage.IsOpen = false;
+                IsLoadingRecentFile = false;
+                _backstageToClose = null;
+                RecentFilesFilter = string.Empty;
+            }
+        }
+
+        private void RefreshConnectionDetails(IConnection connection)
+        {
+            var doc = ActiveDocument;
+            
+            if (connection == null)
+            {
+                Log.Debug(Common.Constants.LogMessageTemplate, "RibbonViewModel", "RefreshConnectionDetails", "connection == null");
+                _isConnecting = false;
+                NotifyOfPropertyChange(() => CanRunQuery);
+                NotifyOfPropertyChange(() => CanClearCache);
+                NotifyOfPropertyChange(() => CanClearCacheAuto);
+                NotifyOfPropertyChange(() => CanRefreshMetadata);
+                NotifyOfPropertyChange(() => CanConnect);
+                NotifyOfPropertyChange(() => CanDiscoverQueryDependencies);
+                TraceWatchers?.DisableAll();
+                return;
+            }
+
+            try
+            {
+                NotifyOfPropertyChange(() => CanRunQuery);
+                NotifyOfPropertyChange(() => CanClearCache);
+                NotifyOfPropertyChange(() => CanClearCacheAuto);
+                NotifyOfPropertyChange(() => CanRefreshMetadata);
+                NotifyOfPropertyChange(() => CanConnect);
+                NotifyOfPropertyChange(() => CanDiscoverQueryDependencies);
+                UpdateTraceWatchers();
+                Log.Debug("{Class} {Event} {ServerName}", "RibbonViewModel", "RefreshConnectionDetails", connection.ServerName);                
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(RefreshConnectionDetails), "Error refreshing connection");
                 doc.OutputError(ex.Message);
             }
             finally
             {
                 _isConnecting = false;
-                NotifyOfPropertyChange(() => CanRunQuery);
-                NotifyOfPropertyChange(() => CanClearCache);
-                NotifyOfPropertyChange(() => CanRefreshMetadata);
-                NotifyOfPropertyChange(() => CanConnect);
             }
         }
         
         [ImportMany]
         public IEnumerable<IResultsTarget> AvailableResultsTargets {get; set; }
 
-        public IEnumerable<IResultsTarget> ResultsTargets { get {
-            //return  AvailableResultsTargets.OrderBy<IEnumerable<IResultsTarget>,int>(AvailableResultsTargets, x => x.DisplayOrder).Where(x=> x.IsEnabled.ToList<IResultsTarget>();
-            return (from t in AvailableResultsTargets
-                    where t.IsAvailable
-                    select t).OrderBy(x => x.DisplayOrder).AsEnumerable<IResultsTarget>();
-        } }
+        public IEnumerable<IResultsTarget> ResultsTargets { 
+            get {
+                return (from t in AvailableResultsTargets
+                        where t.IsAvailable
+                        select t).OrderBy(x => x.DisplayOrder).AsEnumerable<IResultsTarget>();
+            } 
+        }
 
         private IResultsTarget _selectedTarget;
-        private bool _queryRunning;
+        private bool QueryRunning => ActiveDocument?.IsQueryRunning??false;
         private QueryTraceStatus _traceStatus = QueryTraceStatus.Stopped;
         private StatusBarMessage _traceMessage;
         // default to first target if none currently selected
         public IResultsTarget SelectedTarget {
             get { return _selectedTarget ?? AvailableResultsTargets.Where(x => x.IsDefault).First<IResultsTarget>(); }
             set { _selectedTarget = value;
-                Log.Verbose("{class} {property} {value}", "RibbonViewModel", "SelectedTarget:Set", value.Name);
+                Log.Verbose("{class} {property} {value}", "RibbonViewModel", "SelectedTarget:Set", value?.Name??"<null>");
                 if (_selectedTarget is IActivateResults)
                     ActiveDocument?.ActivateResults();
                 NotifyOfPropertyChange(()=>SelectedTarget);
                 if (!_isDocumentActivating)
                 {
-                    _eventAggregator.BeginPublishOnUIThread(new QueryResultsPaneMessageEvent(_selectedTarget));
+                    _eventAggregator.PublishAsync(new QueryResultsPaneMessageEvent(_selectedTarget));
                 }
                 if (_selectedTarget is IActivateResults) { ActiveDocument?.ActivateResults(); }
                 
             }
         }
 
-        public IObservableCollection<ITraceWatcher> TraceWatchers { get { return ActiveDocument == null ? null : ActiveDocument.TraceWatchers; } }
-         
-        public void Handle(ActivateDocumentEvent message)
+        public IObservableCollection<ITraceWatcher> TraceWatchers => ActiveDocument?.TraceWatchers;
+
+        public Task HandleAsync(ActivateDocumentEvent message, CancellationToken cancellationToken)
         {
-            Log.Debug("{Class} {Event} {Document}", "RibbonViewModel", "Handle:ActivateDocumentEvent", message.Document.DisplayName);
-            _isDocumentActivating = true;
-            ActiveDocument = message.Document;
-            var doc = ActiveDocument;
-            SelectedTarget = ActiveDocument.SelectedTarget;
-
-            _queryRunning = ActiveDocument.IsQueryRunning;
-            if (ActiveDocument.Tracer == null)
-                _traceStatus = QueryTraceStatus.Stopped;
-            else
-                _traceStatus = ActiveDocument.Tracer.Status;
-
-            RefreshRibbonButtonEnabledStatus();
-
-            if (!ActiveDocument.IsConnected)
-            {
-                UpdateTraceWatchers();
-                NotifyOfPropertyChange(() => TraceWatchers);
-                NotifyOfPropertyChange(() => ServerTimingsChecked);
-                NotifyOfPropertyChange(() => ServerTimingDetails);
-                return;
-            }
+            DocumentViewModel doc = null;
             try
             {
-                RefreshConnectionDetails(ActiveDocument, ActiveDocument.SelectedDatabase);
+                Log.Debug("{Class} {Event} {Document}", "RibbonViewModel", "Handle:ActivateDocumentEvent", message.Document.DisplayName);
+                _isDocumentActivating = true;
+                ActiveDocument = message.Document;
+                doc = ActiveDocument;
+                SelectedTarget = ActiveDocument.SelectedTarget??SelectedTarget;
+
+                _traceStatus = GetTraceStatus();
+
+                RefreshRibbonButtonEnabledStatus();
+
+                if (!ActiveDocument.IsConnected)
+                {
+                    UpdateTraceWatchers();
+                    NotifyOfPropertyChange(() => TraceWatchers);
+                    NotifyOfPropertyChange(() => ServerTimingsChecked);
+                    NotifyOfPropertyChange(() => ServerTimingDetails);
+                    return Task.CompletedTask;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), "IHandle<ActivateDocumentEvent>", ex.Message);
+                doc?.OutputError($"Error Activating Document: {ex.Message}");
+            }
+   
+            try
+            {
+                RefreshConnectionDetails(ActiveDocument.Connection);
                 // TODO - do we still need to check trace watchers if we are not connected??
                 UpdateTraceWatchers();
             }
             catch (AdomdConnectionException ex)
             {
                 Log.Error("{class} {method} {Exception}", "RibbonViewModel", "Handle(ActivateDocumentEvent)", ex);
-                doc.OutputError(ex.Message);
+                ActiveDocument?.OutputError(ex.Message);
             }
             finally
             {
@@ -392,33 +579,80 @@ namespace DaxStudio.UI.ViewModels
             NotifyOfPropertyChange(() => TraceWatchers);
             NotifyOfPropertyChange(() => ServerTimingsChecked);
             NotifyOfPropertyChange(() => ServerTimingDetails);
+
+            _eventAggregator.PublishAsync(new DocumentActivatedEvent(message.Document), cancellationToken: cancellationToken);
+            return Task.CompletedTask;
+        }
+
+        private QueryTraceStatus GetTraceStatus()
+        {
+            var watchers = ActiveDocument.TraceWatchers;
+            var status = QueryTraceStatus.Stopped; // assume no traces are running
+            foreach (var tw in watchers)
+            {
+                switch (tw.TraceStatus)
+                {
+                    // if any of the trace watchers are in a changing or error state
+                    // return the state of the first one we find
+                    case QueryTraceStatus.Starting:
+                    case QueryTraceStatus.Stopping:
+                    case QueryTraceStatus.Error:
+                        return tw.TraceStatus;
+                    // if one or more traces are started and none are in a changing or 
+                    // error state we will return "Started"
+                    case QueryTraceStatus.Started:
+                        status = tw.TraceStatus;
+                        break;
+                    case QueryTraceStatus.Stopped:
+                    case QueryTraceStatus.Unknown:
+                        // do nothing in these cases
+                        break;
+
+                }
+
+            }
+            return status;
         }
 
         private void RefreshRibbonButtonEnabledStatus()
         {
-            NotifyOfPropertyChange(() => CanRunQuery);
-            NotifyOfPropertyChange(() => CanCancelQuery);
-            NotifyOfPropertyChange(() => CanClearCache);
-            NotifyOfPropertyChange(() => CanRefreshMetadata);
-            NotifyOfPropertyChange(() => CanFormatQueryStandard);
-            NotifyOfPropertyChange(() => CanCommentSelection);
-            NotifyOfPropertyChange(() => CanUncommentSelection);
-            NotifyOfPropertyChange(() => CanUndo);
-            NotifyOfPropertyChange(() => CanRedo);
-            NotifyOfPropertyChange(() => CanConnect);
-            NotifyOfPropertyChange(() => CanLaunchSqlProfiler);
-            NotifyOfPropertyChange(() => CanLaunchExcel);
-            NotifyOfPropertyChange(() => CanExportAllData);
-            NotifyOfPropertyChange(() => CanExportAnalysisData);
+            NotifyOfPropertyChange(nameof(CanRunQuery));
+            NotifyOfPropertyChange(nameof(CanCancelQuery));
+            NotifyOfPropertyChange(nameof(CanClearCache));
+            NotifyOfPropertyChange(nameof( CanClearCacheAuto));
+            NotifyOfPropertyChange(nameof(CanRefreshMetadata));
+            NotifyOfPropertyChange(nameof(CanFormatQueryStandard));
+            NotifyOfPropertyChange(nameof(CanCommentSelection));
+            NotifyOfPropertyChange(nameof(CanUncommentSelection));
+            NotifyOfPropertyChange(nameof(CanToUpper));
+            NotifyOfPropertyChange(nameof(CanToLower));
+            NotifyOfPropertyChange(nameof(CanSwapDelimiters));
+            NotifyOfPropertyChange(nameof(CanMergeParameters));
+            NotifyOfPropertyChange(nameof(CanUndo));
+            NotifyOfPropertyChange(nameof(CanRedo));
+            NotifyOfPropertyChange(nameof(CanConnect));
+            NotifyOfPropertyChange(nameof(CanLaunchSqlProfiler));
+            NotifyOfPropertyChange(nameof(CanLaunchExcel));
+            NotifyOfPropertyChange(nameof(CanExportAllData));
+            NotifyOfPropertyChange(nameof(CanExportAnalysisData));
+            NotifyOfPropertyChange(nameof(CanViewAnalysisData));
+            NotifyOfPropertyChange(nameof(CanLoadPowerBIPerformanceData));
+            NotifyOfPropertyChange(nameof(CanDisplayQueryBuilder));
+            NotifyOfPropertyChange(nameof(CanRunBenchmark));
+            NotifyOfPropertyChange(nameof(CanRunServerFEBenchmark));
+            NotifyOfPropertyChange(nameof(CanNewQueryWithCurrentConnection));
+            NotifyOfPropertyChange(nameof(TraceWatchers));
             UpdateTraceWatchers();
         }
 
         private void UpdateTraceWatchers()
         {
+            if (TraceWatchers == null) return;
+
             var activeTrace = TraceWatchers.FirstOrDefault(t => t.IsChecked);
             foreach (var tw in TraceWatchers)
             {
-                tw.CheckEnabled(ActiveDocument, activeTrace);
+                tw.CheckEnabled(ActiveDocument?.Connection, activeTrace);
             }
         }
 
@@ -426,7 +660,7 @@ namespace DaxStudio.UI.ViewModels
          
         public DocumentViewModel ActiveDocument
         {
-            get { return _activeDocument; }
+            get => _activeDocument;
             set {
                 if(_activeDocument != null) _activeDocument.PropertyChanged -= ActiveDocumentPropertyChanged;
                 _activeDocument = value;
@@ -435,6 +669,15 @@ namespace DaxStudio.UI.ViewModels
                 NotifyOfPropertyChange(() => CanRunQuery);
                 NotifyOfPropertyChange(() => CanRefreshMetadata);
                 NotifyOfPropertyChange(() => CanConnect);
+                NotifyOfPropertyChange(() => CanShowViewAsDialog);
+                NotifyOfPropertyChange(() => IsActiveDocumentConnected);
+                NotifyOfPropertyChange(() => IsActiveDocumentVertipaqAnalyzerRunning);
+                NotifyOfPropertyChange(() => CanImportAnalysisData);
+                NotifyOfPropertyChange(() => CanDisplayQueryBuilder);
+                NotifyOfPropertyChange(() => DisplayQueryBuilder);
+                NotifyOfPropertyChange(() => FormatQueryDisabledReason);
+                NotifyOfPropertyChange(() => CanShowModelDiagram);
+                NotifyOfPropertyChange(() => CanShowDeltaAnalyzer);
                 if (_activeDocument != null) _activeDocument.PropertyChanged += ActiveDocumentPropertyChanged;
             }
         }
@@ -443,44 +686,133 @@ namespace DaxStudio.UI.ViewModels
         {
             switch (e.PropertyName)
             {
-                case "IsQueryRunning":
-                    _queryRunning = ActiveDocument.IsQueryRunning;
+                case nameof(ActiveDocument.IsQueryRunning):
+                    NotifyOfPropertyChange(() => CanRunQuery);
+                    NotifyOfPropertyChange(() => CanRunBenchmark);
+                    NotifyOfPropertyChange(() => CanRunServerFEBenchmark);
+                    NotifyOfPropertyChange(() => CanCancelQuery);
+                    NotifyOfPropertyChange(() => CanClearCache);
+                    NotifyOfPropertyChange(nameof(CanClearCacheAuto));
+                    NotifyOfPropertyChange(() => CanRefreshMetadata);
+                    NotifyOfPropertyChange(() => CanConnect);
+                    NotifyOfPropertyChange(() => CanViewAnalysisData);
+                    NotifyOfPropertyChange(() => CanShowViewAsDialog);
+                    break;
+                case nameof(ActiveDocument.IsVertipaqAnalyzerRunning):
+                    NotifyOfPropertyChange(() => CanViewAnalysisData);
+                    NotifyOfPropertyChange(() => CanExportAnalysisData);
+                    NotifyOfPropertyChange(() => CanRunBenchmark);
+                    NotifyOfPropertyChange(() => CanRunServerFEBenchmark);
+                    NotifyOfPropertyChange(() => CanShowViewAsDialog);
+                    break;
+                case nameof(ActiveDocument.IsConnected):
                     NotifyOfPropertyChange(() => CanRunQuery);
                     NotifyOfPropertyChange(() => CanCancelQuery);
                     NotifyOfPropertyChange(() => CanClearCache);
+                    NotifyOfPropertyChange(nameof(CanClearCacheAuto));
                     NotifyOfPropertyChange(() => CanRefreshMetadata);
                     NotifyOfPropertyChange(() => CanConnect);
+                    NotifyOfPropertyChange(() => CanShowViewAsDialog);
+                    NotifyOfPropertyChange(() => CanViewAnalysisData);
+                    NotifyOfPropertyChange(() => CanExportAnalysisData);
+                    NotifyOfPropertyChange(() => CanExportAllData);
+                    NotifyOfPropertyChange(() => IsActiveDocumentConnected);
+                    NotifyOfPropertyChange(() => CanShowModelDiagram);
+                    NotifyOfPropertyChange(() => CanShowDeltaAnalyzer);
+                    break;
+                case nameof(ActiveDocument.ShowQueryBuilder):
+                    NotifyOfPropertyChange(() => DisplayQueryBuilder);
                     break;
             }
         }
 
-        public void Handle(QueryFinishedEvent message)
+        public Task HandleAsync(QueryFinishedEvent message, CancellationToken cancellationToken)
         {
-            _queryRunning = false;
             NotifyOfPropertyChange(() => CanRunQuery);
             NotifyOfPropertyChange(() => CanCancelQuery);
             NotifyOfPropertyChange(() => CanClearCache);
             NotifyOfPropertyChange(() => CanRefreshMetadata);
             NotifyOfPropertyChange(() => CanConnect);
+            NotifyOfPropertyChange(() => CanShowViewAsDialog);
+            return Task.CompletedTask;
         }
 
         public void LinkToDaxStudioWiki()
         {
-            OpenUrl(urlDaxStudioWiki, "LinkToDaxStudioWiki");
-                
+            OpenUrl(urlDaxStudioWiki, "LinkToDaxStudioWiki");        
         }
+
+
 
         public void LinkToPowerPivotForum()
         {
-            OpenUrl(urlPowerPivotForum, "LinkToPowerPivotForum");
+            OpenUrl(urlPowerPivotForum, nameof(LinkToPowerPivotForum));
         }
 
         public void LinkToSsasForum()
         {
-            OpenUrl(urlSsasForum, "LinkToSsasForum");
+            OpenUrl(urlSsasForum, nameof(LinkToSsasForum));
         }
 
-        internal void OpenUrl(string name, string url)
+        public void LinkToPbiDesktopForum()
+        {
+            OpenUrl(urlPbiDesktopForum, nameof(LinkToPbiDesktopForum));
+        }
+
+        public void LinkToDaxForum()
+        {
+            OpenUrl(urlDaxForum, nameof(LinkToDaxForum));
+        }
+
+        public void LinkToGithubBugReport()
+        {
+            var url = urlGithubBugReportPrefix + GetVersionInfoUrlEncoded() + urlGithubBugReportSuffix;
+            OpenUrl(url, "LinkToGithubBugReport");
+        }
+
+        private string GetVersionInfoUrlEncoded()
+        {
+            string encodedString = string.Empty;
+            try
+            {
+                var connectionDetail = "not connected";
+                var activeConnection = ActiveDocument?.Connection;
+                var isConnected = activeConnection?.IsConnected ?? false;
+
+                if (isConnected)
+                {
+                    connectionDetail = $"{activeConnection.ServerType} - {activeConnection.ServerVersion}";
+                }
+
+                var version = Assembly.GetExecutingAssembly().GetName().Version.ToString();
+                encodedString = WebUtility.UrlEncode($"DAX Studio v{version}\nConnection: {connectionDetail}\n\n");
+            }
+            catch (Exception ex)
+            {
+                // any errors should be swallowed
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(GetVersionInfoUrlEncoded), "Error encoding bug report body");
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error,
+                    $"Error encoding bug report body: {ex.Message}"));
+            }
+
+            return encodedString;
+        }
+
+        public void LinkToGithubFeatureRequest()
+        {
+            OpenUrl(urlGithubFeatureRequest, "LinkToGithubFeatureRequest");
+        }
+
+        public void LinkToGithubDiscussions()
+        {
+            OpenUrl(urlGithubDiscussions, "LinkToGithubDiscussions");
+        }
+        public void LinkToSponsors()
+        {
+            OpenUrl(urlSponsors, "LinkToSponsors");
+        }
+
+        internal void OpenUrl(string url, string name)
         {
             try
             {
@@ -489,52 +821,101 @@ namespace DaxStudio.UI.ViewModels
             catch (Exception ex)
             {
                 Log.Error(ex, "{class} {method} Error Launching {method}", "RibbonViewModel", "LinkToDaxStudioWiki");
-                _eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, string.Format("The following error occurred while trying to open the {1}: {0}", ex.Message, name)));
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, string.Format("The following error occurred while trying to open the {1}: {0}", ex.Message, name)));
             }
         }
 
-        public void Handle(ConnectionPendingEvent message)
+        public Task HandleAsync(ConnectionPendingEvent message, CancellationToken cancellationToken)
         {
             _isConnecting = true;
+            return Task.CompletedTask;
         }
-        public void Handle(ApplicationActivatedEvent message)
+        public async Task HandleAsync(ApplicationActivatedEvent message, CancellationToken cancellationToken)
         {
-            Log.Debug("{Class} {Event} {@ApplicationActivatedEvent}", "RibbonViewModel", "Handle:ApplicationActivatedEvent:Start", message);
-            if (ActiveDocument != null)
+            try
             {
-                if (ActiveDocument.HasDatabaseSchemaChanged())
+                Log.Debug("{Class} {Event} {Message}", "RibbonViewModel", "Handle:ApplicationActivatedEvent", "Start");
+
+                if (ActiveDocument != null)
                 {
-                    ActiveDocument.RefreshMetadata();
-                    ActiveDocument.OutputMessage("Model schema change detected - Metadata refreshed");
+                    await ActiveDocument?.CheckForMetadataUpdatesAsync();
+                    RefreshConnectionDetails(ActiveDocument.Connection);
                 }
-                RefreshConnectionDetails(ActiveDocument, ActiveDocument.SelectedDatabase);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), "Handle<ApplicationActivatedEvent>", "Error Activating Application");
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error Activating Application:\n{ex.Message}"), cancellationToken);
+            }
+            finally
+            {
+                Log.Debug("{Class} {Event} {Messsage}", "RibbonViewModel", "Handle:ApplicationActivatedEvent", "End");
+            }
+            
+        }
+
+        
+        public Task HandleAsync(TraceChangingEvent message, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (ActiveDocument != null)
+                    _traceMessage = new StatusBarMessage(ActiveDocument, "Waiting for trace to update");
+                _traceStatus = message.TraceStatus;
+                RefreshRibbonButtonEnabledStatus();
+            }
+            catch(Exception ex)
+            {
+                var msg = $"Error updating trace status\n{ex.Message}";
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel),"Handle<TraceChangingEvent>" , msg);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, msg), cancellationToken);
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task HandleAsync(TraceChangedEvent message, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (_traceMessage != null) _traceMessage.Dispose();
+                _traceStatus = message.TraceStatus;
+                RefreshRibbonButtonEnabledStatus();
+            }
+            catch (Exception ex)
+            {
+                var msg = $"Error updating trace status:\n{ex.Message}";
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel),"Handle<TraceChangedEvent>", msg);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, msg), cancellationToken);
+            }
+            return Task.CompletedTask;
+        }
+
+        public async Task HandleAsync(DocumentConnectionUpdateEvent message, CancellationToken cancellationToken)
+        {
+            try
+            {
+                RefreshConnectionDetails(message.Connection);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), "Handle<DocumentConnectionUpdateEvent>", "Error updating the current connection");
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error updating the current connection\n{ex.Message}"));
             }
            
-            Log.Debug("{Class} {Event} {@ApplicationActivatedEvent}", "RibbonViewModel", "Handle:ApplicationActivatedEvent:End", message);
         }
-
-        
-        public void Handle(TraceChangingEvent message)
+        public async Task HandleAsync(ConnectFailedEvent message, CancellationToken cancellationToken)
         {
-            _traceMessage = new StatusBarMessage(ActiveDocument, "Waiting for trace to update");
-            _traceStatus = message.TraceStatus;
-            NotifyOfPropertyChange(() => CanRunQuery);
-            NotifyOfPropertyChange(() => CanConnect);
-        }
+            try
+            {
+                RefreshConnectionDetails(null);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), "Handle<ConnectFailedEvent>", "Error updating the current connection");
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error handling the failed connection attempt\n{ex.Message}"));
+            }
 
-        public void Handle(TraceChangedEvent message)
-        {
-            if(_traceMessage != null) _traceMessage.Dispose();
-            _traceStatus = message.TraceStatus;
-            NotifyOfPropertyChange(() => CanRunQuery);
-            NotifyOfPropertyChange(() => CanConnect);
         }
-
-        public void Handle(DocumentConnectionUpdateEvent message)
-        {
-            RefreshConnectionDetails(message.Connection, message.Connection.SelectedDatabase);
-        }
-        
         public bool CanCut { get; set; }
         
         public bool CanCopy { get;set; }
@@ -544,9 +925,9 @@ namespace DaxStudio.UI.ViewModels
         [Import]
         HelpAboutViewModel aboutDialog { get; set; }
 
-        public void ShowHelpAbout()
+        public async void ShowHelpAbout()
         {
-            _windowManager.ShowDialogBox(aboutDialog , 
+            await _windowManager.ShowDialogBoxAsync(aboutDialog , 
                 settings: new Dictionary<string, object>
                 {
                     { "WindowStyle", WindowStyle.None},
@@ -573,15 +954,17 @@ namespace DaxStudio.UI.ViewModels
             _activeDocument?.Replace();
         }
 
-        public void RefreshMetadata()
+        // async void called from button click
+        public async void RefreshMetadata()
         {
-            ActiveDocument?.RefreshMetadata();
+            if (QueryRunning) {
+                ActiveDocument.OutputWarning("Metadata cannot be refreshed while a query is running");
+                return; 
+            }
+            await ActiveDocument?.RefreshMetadataAsync();
         }
 
-        public bool CanRefreshMetadata
-        {
-            get { return ActiveDocument != null && ActiveDocument.IsConnected; }
-        }
+        public bool CanRefreshMetadata => ActiveDocument != null && ActiveDocument.IsConnected;
 
         internal void FindNow()
         {
@@ -596,84 +979,265 @@ namespace DaxStudio.UI.ViewModels
             ActiveDocument.FindReplaceDialog.FindText();
         }
 
-        public bool ServerTimingsChecked { get { return ActiveDocument?.ServerTimingsChecked??false; } }
+        public bool ServerTimingsChecked => ActiveDocument?.ServerTimingsChecked??false;
 
-        public ServerTimingDetailsViewModel ServerTimingDetails { get { return ActiveDocument?.ServerTimingDetails; } }
+        public ServerTimingDetailsViewModel ServerTimingDetails => ActiveDocument?.ServerTimingDetails;
 
-        public void Handle(TraceWatcherToggleEvent message)
+        public Task HandleAsync(TraceWatcherToggleEvent message, CancellationToken cancellationToken)
         {
-            if (message.TraceWatcher is ServerTimesViewModel)
+            try
             {
-                NotifyOfPropertyChange(() => ServerTimingsChecked);
+                if (message.TraceWatcher is ServerTimesViewModel)
+                {
+                    NotifyOfPropertyChange(() => ServerTimingsChecked);
+                }
+                RefreshRibbonButtonEnabledStatus();
+            }
+            catch (Exception ex)
+            {
+                var msg = $"Error enabling trace:\n{ex.Message}";
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel),"Handle<TraceWatcherToggleEvent>", msg);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, msg));
+            }
+            return Task.CompletedTask;
+        }
+
+        public ObservableCollection<IDaxFile> RecentFiles { get; set; }
+
+        public ICollectionView RecentFilesView { get; private set; }
+
+        private string _recentFilesFilter = string.Empty;
+        public string RecentFilesFilter
+        {
+            get => _recentFilesFilter;
+            set
+            {
+                if (_recentFilesFilter == value) return;
+                _recentFilesFilter = value ?? string.Empty;
+                NotifyOfPropertyChange(nameof(RecentFilesFilter));
+                RecentFilesView?.Refresh();
             }
         }
 
-        public ObservableCollection<DaxFile> RecentFiles { get; set; }
+        private bool RecentFileFilterPredicate(object item)
+        {
+            var filter = _recentFilesFilter;
+            if (string.IsNullOrWhiteSpace(filter)) return true;
+            if (!(item is DaxFile file)) return true;
+
+            return (file.FileAndExtension?.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+                || (file.Folder?.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+                || (file.FullPath?.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
 
         internal void OnClose()
         {
-            RegistryHelper.SaveFileMRUListToRegistry(this.RecentFiles);
+            //SettingProvider.SaveFileMRUList(null, this.RecentFiles);
         }
 
         private void AddToRecentFiles(string fileName)
         {
-            DaxFile df = (from DaxFile f in RecentFiles
-                          where f.FullPath.Equals(fileName, StringComparison.CurrentCultureIgnoreCase)
-                          select f).FirstOrDefault<DaxFile>();
-            if (df == null)
+            SettingProvider.SaveFileMRUList(new DaxFile(fileName,false));
+            var existingFile = RecentFiles.FirstOrDefault(f => f.FullPath == fileName);
+            // add to windows JumpList
+            try
             {
-                RecentFiles.Insert(0, new DaxFile(fileName));
+                JumpListHelper.AddToRecentFilesList(fileName);
+            }
+            catch (Exception ex)
+            {
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Warning, $"Error adding file to Windows JumpList: {ex.Message}"));
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(AddToRecentFiles), "Error adding file to JumpList");
+            }
+
+            if (existingFile != null)
+            {
+                RecentFiles.Move( RecentFiles.IndexOf(existingFile), 0);
             }
             else
             {
-                // move the file to the first position in the list                
-                RecentFiles.Remove(df);
-                RecentFiles.Insert(0, df);
+                RecentFiles.Insert(0, new DaxFile(fileName, false));
             }
         }
 
-        public void Handle(FileOpenedEvent message)
+        public Task HandleAsync(FileOpenedEvent message, CancellationToken cancellationToken)
         {
-            AddToRecentFiles(message.FileName);
+            try
+            {
+                AddToRecentFiles(message.FileName);
+                RefreshRibbonButtonEnabledStatus();
+                
+                // Close backstage if it was opened from recent files
+                if (_backstageToClose != null && IsLoadingRecentFile)
+                {
+                    _backstageToClose.IsOpen = false;
+                    _backstageToClose = null;
+                    IsLoadingRecentFile = false;
+                    RecentFilesFilter = string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                var msg = $"Error opening file\n{ex.Message}";
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), "Handle<FileOpenedEvent>", msg);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, msg));
+            }
+            return Task.CompletedTask;
         }
 
-        public void Handle(FileSavedEvent message)
+        public Task HandleAsync(FileSavedEvent message, CancellationToken cancellationToken)
         {
-            AddToRecentFiles(message.FileName);
+            try
+            {
+                AddToRecentFiles(message.FileName);
+            }
+            catch(Exception ex)
+            {
+                var msg = $"Error saving file:\n{ex.Message}";
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel),"Handle<FileSavedEvent>", msg);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, msg));
+            }
+            return Task.CompletedTask;
+        }
+        public async void OpenRecentFile(DaxFile file, FrameworkElement backstage)
+        {
+            Fluent.Backstage item = GetBackStageParent(backstage as FrameworkElement) as Fluent.Backstage;
+            OpenRecentFile(file, item).FireAndForget();
         }
 
-        public void OpenRecentFile(DaxFile file, Fluent.Backstage backstage)
+        public async Task OpenRecentFile(DaxFile file, Fluent.Backstage backstage)
         {
-            // if a user clicks on the edge of the recent files list
-            // it's possible to hit this method with no selected file
-            // if this happens we need to exit here and ignore the click
-            if (file == null) return; 
+            if (file == null) return;
+            if (RecentFileNoLongerExists(file)) return;
 
-            // otherwise clost the backstage menu and open the file
-            backstage.IsOpen = false;
-            MoveFileToTopOfRecentList(file);
-            _eventAggregator.PublishOnUIThread(new OpenRecentFileEvent(file.FullPath));
+            try
+            {
+                // Store backstage reference to close it later
+                _backstageToClose = backstage;
+                
+                // Show loading indicator in backstage
+                IsLoadingRecentFile = true;
+                LoadingFileName = file.FileAndExtension;
+                await Dispatcher.Yield();
+
+                // Give UI a chance to update
+                await Task.Delay(50); // Small delay to ensure loading UI shows
+
+
+                MoveFileToTopOfRecentList(file);
+
+                // Load the file - this will happen async
+                await Dispatcher.CurrentDispatcher.InvokeAsync( async () =>
+                {
+                await _eventAggregator.PublishAsync(new OpenDaxFileEvent(file.FullPath));
+                }, DispatcherPriority.Background);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(OpenRecentFile), "Error opening recent file");
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error opening file: {ex.Message}"));
+                
+                // Make sure to clean up on error
+                if (backstage != null)
+                    backstage.IsOpen = false;
+                IsLoadingRecentFile = false;
+                _backstageToClose = null;
+                RecentFilesFilter = string.Empty;
+            }
+        }
+
+        public FrameworkElement GetBackStageParent(FrameworkElement element)
+        {
+            if (element == null) return null;
+            if (element.Parent == null) return null;
+            if (null != (element.Parent as Fluent.Backstage)) return element.Parent as FrameworkElement;
+            return GetBackStageParent(element.Parent as FrameworkElement);
+        }
+
+
+        //public async Task OpenRecentFile(DaxFile file, Fluent.Backstage backstage)
+        //{
+        //    // if a user clicks on the edge of the recent files list
+        //    // it's possible to hit this method with no selected file
+        //    // if this happens we need to exit here and ignore the click
+        //    if (file == null) return;
+
+        //    // Check if the file exists before attempting to open it
+        //    if (RecentFileNoLongerExists(file)) return;
+
+        //    // otherwise clost the backstage menu and open the file
+        //    backstage.IsOpen = false;
+            
+        //    // allow the UI to process events
+        //    //await Task.Yield();
+        //    await Dispatcher.Yield(DispatcherPriority.Render);
+
+        //    // Load file on UI thread (required for WPF operations)
+        //    // but with lower priority so backstage closes first
+        //    await Dispatcher.CurrentDispatcher.InvokeAsync(
+        //        async () => await _eventAggregator.PublishAsync(new OpenDaxFileEvent(file.FullPath)),
+        //        DispatcherPriority.Background
+        //    );
+
+        //    MoveFileToTopOfRecentList(file);
+        //}
+
+
+
+
+        private bool RecentFileNoLongerExists(DaxFile file)
+        {
+            if (System.IO.File.Exists(file.FullPath)) return false;
+
+            // File has been moved or deleted
+            if (MessageBoxEx.Show($"The file '{file.FullPath}'\nhas been deleted, moved or renamed.\n\nWould you like to remove it from the recent files list?", "File not found", MessageBoxButton.YesNo, MessageBoxImage.Exclamation) == MessageBoxResult.Yes)
+            {
+                RecentFiles.Remove(file);
+            }
+            Log.Warning("{class} {method} {message}", "RibbonViewModel", "RecentFileNoLongerExists", $"The following entry in the recent file list no longer exists '{file.FullPath}'");
+            _eventAggregator.PublishAsync(new OutputMessage(MessageType.Warning, $"The following entry in the recent file list no longer exists '{file.FullPath}'"));
+            return true;
         }
 
         private void MoveFileToTopOfRecentList(DaxFile file)
         {
-            // remove the file from it's current position
-            RecentFiles.Remove(file);
-            // insert it at the top of the list
-            RecentFiles.Insert(0, file);
-
-            RegistryHelper.SaveFileMRUListToRegistry(this.RecentFiles);
+            SettingProvider.SaveFileMRUList(file);
+            RecentFiles.Move(RecentFiles.IndexOf(file), 0);
         }
 
+        public bool CanSwapDelimiters => ActiveDocument != null;
         public void SwapDelimiters()
         {
             ActiveDocument?.SwapDelimiters();
         }
 
+        public void MoveCommasToDebugMode()
+        {
+            ActiveDocument?.MoveCommasToDebugMode();
+        }
+
+        public string DebugCommasTitle => "Debug Commas (" + Options.HotkeyDebugCommas + ")";
+        public string SwapDelimitersTitle => "Swap Delimiters (" + Options.HotkeySwapDelimiters + ")";
+        public bool ShowSwapDelimiters
+        {
+            get
+            {
+                return !Options.ShowDebugCommas;
+            }
+        }
+
+        public bool ShowDebugCommas
+        {
+            get
+            {
+                return Options.ShowDebugCommas;
+            }
+        }
+
         public bool IsDebugBuild
         {
             get {
-#if DEBUG
+#if DEBUG 
                 return true;
 #else
                 return false;
@@ -682,122 +1246,288 @@ namespace DaxStudio.UI.ViewModels
             }
         }
 
-        public bool ShowAdvancedTab
+        public bool IsPreviewBuild
         {
             get
             {
-                return ShowExportMetrics | ShowExternalTools | ShowExportAllData | ResultAutoFormat;
-            }
-        }
+#if PREVIEW || DEBUG
+                return true;
+#else
+                return false;
+#endif
 
-        public bool ShowExportGroup => ShowExportAllData | ShowExportMetrics;
-
-        private bool _showExternalTools;
-        public bool ShowExternalTools
-        {
-            get { return _showExternalTools; }
-            private set
-            {
-                _showExternalTools = value;
-                NotifyOfPropertyChange(() => ShowExternalTools);
-                NotifyOfPropertyChange(() => ShowAdvancedTab);
             }
         }
 
 
-        private bool _showExportAllData;
-        public bool ShowExportAllData
-        {
-            get { return _showExportAllData; }
-            private set
-            {
-                _showExportAllData = value;
-                NotifyOfPropertyChange(() => ShowExportAllData);
-                NotifyOfPropertyChange(() => ShowExportGroup);
-                NotifyOfPropertyChange(() => ShowAdvancedTab);
-            }
-        }
+        #region "Preview Features"
 
-        private bool _showExportMetrics;
-        public bool ShowExportMetrics {
-            get { return _showExportMetrics; }
-            private set {
-                _showExportMetrics = value;
-                NotifyOfPropertyChange(() => ShowExportMetrics);
-                NotifyOfPropertyChange(() => ShowExportGroup);
-                NotifyOfPropertyChange(() => ShowAdvancedTab);
-            }
-        }
+
+
+        #endregion
 
         private bool _ResultAutoFormat;
         public bool ResultAutoFormat {
-            get { return _ResultAutoFormat; }
+            get => _ResultAutoFormat;
             private set {
                 _ResultAutoFormat = value;
                 NotifyOfPropertyChange(() => ResultAutoFormat);
-                NotifyOfPropertyChange(() => ShowAdvancedTab);
             }
         }
 
-        public bool CanExportAnalysisData => IsActiveDocumentConnected();
-
-        public void ExportAnalysisData()
+        public bool CanImportAnalysisData => ActiveDocument != null && !ActiveDocument.IsVertipaqAnalyzerRunning; // we don't need a valid connection to import a .vpax file
+        public void ImportAnalysisData()
         {
-            ActiveDocument?.ExportAnalysisData();
+            ActiveDocument?.ImportAnalysisData();
         }
 
-        public bool CanExportAllData => IsActiveDocumentConnected();
+        public bool CanExportAnalysisData => IsActiveDocumentConnected && !IsActiveDocumentVertipaqAnalyzerRunning 
+                                            || (ActiveDocument?.ToolWindows.Any(tw => tw is VertiPaqAnalyzerViewModel) ?? false);
 
-        public void ExportAllData()
+        public async void ExportAnalysisData()
+        {
+            try
+            {
+                await ActiveDocument?.ExportAnalysisDataAsync();
+            }
+            catch (Exception ex) {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(ExportAnalysisData), "Error while exporting metrics");
+                ActiveDocument?.OutputError(ex.Message);
+            }
+        }
+
+        public bool CanViewAnalysisData => IsActiveDocumentConnected && !QueryRunning;
+
+        public async void ViewAnalysisData()
+        {
+            await ActiveDocument?.ViewAnalysisDataAsync();
+        }
+
+        #region Model Diagram
+
+        /// <summary>
+        /// Whether the Model Diagram feature is enabled in options (preview feature).
+        /// </summary>
+        public bool ShowModelDiagramEnabled => Options.ShowModelDiagram;
+
+        /// <summary>
+        /// Whether the active document has VPA (VertiPaq Analyzer) data available.
+        /// This allows the Model Diagram to work with offline .daxx files.
+        /// </summary>
+        private bool HasVpaData => ActiveDocument?.ToolWindows?.FirstOrDefault(tw => tw is VertiPaqAnalyzerViewModel) is VertiPaqAnalyzerViewModel vpa && vpa.ViewModel != null;
+
+        /// <summary>
+        /// Whether we can show the Model Diagram.
+        /// Enabled when connected to a model OR when VPA data is available (offline .daxx files).
+        /// </summary>
+        public bool CanShowModelDiagram => (IsActiveDocumentConnected || HasVpaData) && ShowModelDiagramEnabled;
+
+        /// <summary>
+        /// Shows the Model Diagram tool window.
+        /// When connected, loads from the live model. When offline with VPA data, loads from VPA.
+        /// </summary>
+        public void ShowModelDiagram()
         {
             if (ActiveDocument == null) return;
+            try
+            {
+                System.Diagnostics.Debug.WriteLine($"[ModelDiagram] ShowModelDiagram START on thread {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+                // Reuse an existing ModelDiagramViewModel if one is already in ToolWindows
+                // (closing the pane hides it but doesn't remove it from the collection)
+                var diagramViewModel = ActiveDocument.ToolWindows.OfType<ModelDiagramViewModel>().FirstOrDefault();
+                bool isExisting = diagramViewModel != null;
+                System.Diagnostics.Debug.WriteLine($"[ModelDiagram] isExisting={isExisting}");
 
-            var dialog = new ExportDataDialogViewModel(_eventAggregator);
-
-            dialog.ActiveDocument = _activeDocument;
-
-            _windowManager.ShowDialogBox(dialog, settings: new Dictionary<string, object>
+                if (!isExisting)
                 {
-                    { "WindowStyle", WindowStyle.None},
-                    { "ShowInTaskbar", false},
-                    { "ResizeMode", ResizeMode.NoResize},
-                    { "Background", System.Windows.Media.Brushes.Transparent},
-                    { "AllowsTransparency",true}
+                    System.Diagnostics.Debug.WriteLine($"[ModelDiagram] Creating new ModelDiagramViewModel...");
+                    diagramViewModel = new ModelDiagramViewModel(_eventAggregator, ActiveDocument.Connection as IMetadataProvider, Options);
+                    System.Diagnostics.Debug.WriteLine($"[ModelDiagram] ModelDiagramViewModel created");
+                }
+                else
+                {
+                    // Restore visibility so the pane reappears in AvalonDock
+                    System.Diagnostics.Debug.WriteLine($"[ModelDiagram] Restoring visibility on existing VM");
+                    diagramViewModel.IsVisible = true;
+                }
 
-                });           
+                // Check for VPA data first (works for both online and offline)
+                var vpaView = ActiveDocument.ToolWindows.FirstOrDefault(tw => tw is VertiPaqAnalyzerViewModel) as VertiPaqAnalyzerViewModel;
+                
+                // Try to get the model from the connection (live or VPAX-populated metadata pane)
+                var model = ActiveDocument.Connection?.SelectedModel;
+                System.Diagnostics.Debug.WriteLine($"[ModelDiagram] IsActiveDocumentConnected={IsActiveDocumentConnected}, hasModel={model != null}, hasVpa={vpaView?.ViewModel != null}");
+
+                // Show the tool window first so the loading indicator is visible
+                if (!isExisting)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[ModelDiagram] Publishing ShowToolWindowEvent BEFORE load");
+                    _eventAggregator.PublishAsync(new ShowToolWindowEvent(diagramViewModel));
+                    System.Diagnostics.Debug.WriteLine($"[ModelDiagram] ShowToolWindowEvent published");
+                }
+
+                if (model != null)
+                {
+                    // Load from model metadata (works for both live connections and VPAX-loaded metadata)
+                    System.Diagnostics.Debug.WriteLine($"[ModelDiagram] Calling LoadFromModel for '{model.Name}'...");
+                    diagramViewModel.LoadFromModel(model);
+                    System.Diagnostics.Debug.WriteLine($"[ModelDiagram] LoadFromModel returned");
+
+                    // Enrich with VPA data if available
+                    if (vpaView?.ViewModel != null)
+                    {
+                        diagramViewModel.EnrichFromVertipaq(vpaView.ViewModel);
+                    }
+                }
+                else if (vpaView?.ViewModel != null)
+                {
+                    // Fallback: Load from VPA data only (no model metadata available)
+                    Log.Information("{class} {method} Loading Model Diagram from VPA data (no model metadata)", nameof(RibbonViewModel), nameof(ShowModelDiagram));
+                    System.Diagnostics.Debug.WriteLine($"[ModelDiagram] Calling LoadFromVpaModel (fallback)...");
+                    diagramViewModel.LoadFromVpaModel(vpaView.ViewModel);
+                }
+                else
+                {
+                    _eventAggregator.PublishAsync(new OutputMessage(MessageType.Warning, "No model data available. Please connect to a model or open a file with VPA data."));
+                    return;
+                }
+
+                // Publish event to show/reactivate the tool window in the docking panel
+                // Only publish if we haven't already shown it above (for existing windows being reactivated)
+                if (isExisting)
+                {
+                    _eventAggregator.PublishAsync(new ShowToolWindowEvent(diagramViewModel));
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(ShowModelDiagram), "Error showing Model Diagram");
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error showing Model Diagram\n{ex.Message}"));
+            }
         }
 
-        public void Handle(UpdateGlobalOptions message)
+        #endregion
+
+        #region Delta Analyzer
+
+        /// <summary>
+        /// Whether the Delta Analyzer feature is enabled in options (preview feature).
+        /// </summary>
+        public bool ShowDeltaAnalyzerEnabled => Options.ShowDeltaAnalyzer;
+
+        /// <summary>
+        /// Whether the Delta Analyzer can be shown. Requires an active connection and the preview option.
+        /// </summary>
+        public bool CanShowDeltaAnalyzer => ShowDeltaAnalyzerEnabled;
+
+        /// <summary>
+        /// Shows the Delta Analyzer tool window and kicks off analysis of the connected Direct Lake model.
+        /// The window is shown before loading so the progress overlay is visible.
+        /// </summary>
+        public void ShowDeltaAnalyzer()
+        {
+            if (ActiveDocument == null) return;
+            try
+            {
+                // Reuse an existing DeltaAnalyzerViewModel if one is already in ToolWindows.
+                var deltaViewModel = ActiveDocument.ToolWindows.OfType<DeltaAnalyzerViewModel>().FirstOrDefault();
+                bool isExisting = deltaViewModel != null;
+
+                if (!isExisting)
+                {
+                    deltaViewModel = new DeltaAnalyzerViewModel(_eventAggregator, Options);
+                }
+                else
+                {
+                    deltaViewModel.IsVisible = true;
+                }
+
+                // Show the tool window first so the loading overlay is visible while we load.
+                _eventAggregator.PublishAsync(new ShowToolWindowEvent(deltaViewModel));
+
+                var hwnd = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
+                deltaViewModel.LoadFromConnection(ActiveDocument.Connection, hwnd);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), nameof(ShowDeltaAnalyzer), "Error showing Delta Analyzer");
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error showing Delta Analyzer\n{ex.Message}"));
+            }
+        }
+
+        #endregion
+
+        public bool CanExportAllData => IsActiveDocumentConnected;
+
+        public async void ExportAllData()
+        {
+            if (ActiveDocument == null) return;
+            try
+            {
+                //using (var dialog = new ExportDataDialogViewModel(_eventAggregator, ActiveDocument))
+                using (var dialog = new ExportDataWizardViewModel(_eventAggregator, ActiveDocument, Options))
+                {
+
+                    await _windowManager.ShowDialogBoxAsync(dialog, settings: new Dictionary<string, object>
+                    {
+                        { "WindowStyle", WindowStyle.None},
+                        { "ShowInTaskbar", false},
+                        { "ResizeMode", ResizeMode.NoResize},
+                        { "Background", System.Windows.Media.Brushes.Transparent},
+                        { "AllowsTransparency",true}
+                        
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "{class} {method} {message}", nameof(RibbonViewModel), nameof(ExportAllData), ex.Message);
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, $"Error Exporting All Data: {ex.Message}"));
+            }
+        }
+
+        public Task HandleAsync(UpdateGlobalOptions message, CancellationToken cancellationToken)
         {
             UpdateGlobalOptions();
+            return Task.CompletedTask;
         }
 
         private void UpdateGlobalOptions()
         {
-            ShowExportMetrics = Options.ShowExportMetrics;
-            ShowExternalTools = Options.ShowExternalTools;
-            ShowExportAllData = Options.ShowExportAllData;
             ResultAutoFormat = Options.ResultAutoFormat;
+            ClearCacheAuto = Options.SetClearCacheAsDefaultRunStyle;
+            NotifyOfPropertyChange(nameof(FormatQueryAlternateTitle));
+            NotifyOfPropertyChange(nameof(FormatQueryStandardTitle));
+            NotifyOfPropertyChange(nameof(FormatQueryDisabledReason));
+            NotifyOfPropertyChange(nameof(CanFormatQueryStandard));
+            NotifyOfPropertyChange(nameof(ShowDebugCommas));
+            NotifyOfPropertyChange(nameof(ShowSwapDelimiters));
+            NotifyOfPropertyChange(nameof(DebugCommasTitle));
+            NotifyOfPropertyChange(nameof(SwapDelimitersTitle));
+            NotifyOfPropertyChange(nameof(CanShowModelDiagram));
+            NotifyOfPropertyChange(nameof(ShowModelDiagramEnabled));
+            NotifyOfPropertyChange(nameof(CanShowDeltaAnalyzer));
+            NotifyOfPropertyChange(nameof(ShowDeltaAnalyzerEnabled));
         }
 
-        public void LaunchSqlProfiler()
+        public async void LaunchSqlProfiler()
         {
             if (ActiveDocument == null) return;
             try
             {
                 var serverName = ActiveDocument.Connection.ServerName;
-                System.Diagnostics.Process.Start(_sqlProfilerCommand, $" /A {serverName}");
+                System.Diagnostics.Process.Start(_sqlProfilerCommand, $"/A {SqlProfilerHelper.QuoteArgument(serverName)}");
             }
             catch (Exception ex)
             {
                 Log.Error(ex, "{class} {method} {message}", "RibbonViewModel", "LaunchSqlProfiler", "Error launching SQL Profiler");
-                _eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, "Error Launching SQL Profiler: " + ex.Message));
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, "Error Launching SQL Profiler: " + ex.Message));
             }
         }
 
-        public bool CanLaunchSqlProfiler => IsActiveDocumentConnected() && !string.IsNullOrEmpty(_sqlProfilerCommand);
+        public bool CanLaunchSqlProfiler => IsActiveDocumentConnected && !string.IsNullOrEmpty(_sqlProfilerCommand);
 
-        public void LaunchExcel()
+        public async void LaunchExcel()
         {
             if (ActiveDocument == null) return;
             try
@@ -812,52 +1542,288 @@ namespace DaxStudio.UI.ViewModels
             } catch (Exception ex)
             {
                 Log.Error(ex, "{class} {method} {message}", "RibbonViewModel", "LaunchExcel", ex.Message);
-                _eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, "Error Launching Excel: " + ex.Message));
+                await _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, "Error Launching Excel: " + ex.Message));
 
             }
         }
 
-        public bool CanLaunchExcel => IsActiveDocumentConnected();
+        public bool CanLaunchExcel { 
+            get { 
+                if (!IsActiveDocumentConnected) return false;
+                if (ActiveDocument.Connection.IsPowerPivot) return false;
+                return true;
+            } 
+        }
 
-        private bool IsActiveDocumentConnected()
+        private bool IsActiveDocumentConnected
         {
-            if (ActiveDocument == null) return false;
-            if (ActiveDocument.Connection == null) return false;
-            if (ActiveDocument.Connection.State != System.Data.ConnectionState.Open) return false;
+            get {
+                if (ActiveDocument == null) return false;
+                if (!ActiveDocument.Connection.IsConnected) return false;
 
-            return true;
+                return true;
+            }
         }
 
         public void SaveLayout()
         {
-            _eventAggregator.BeginPublishOnUIThread(new DockManagerSaveLayout());
+            _eventAggregator.PublishAsync(new DockManagerSaveLayout());
         }
 
         public void LoadLayout()
         {
-            _eventAggregator.BeginPublishOnUIThread(new DockManagerLoadLayout(false));
+            _eventAggregator.PublishAsync(new DockManagerLoadLayout(false));
         }
 
         public void ResetLayout()
         {
-            _eventAggregator.BeginPublishOnUIThread(new DockManagerLoadLayout(true));
+            _eventAggregator.PublishAsync(new DockManagerLoadLayout(true));
         }
 
-        public void Handle(AllDocumentsClosedEvent message)
+        private UITheme _theme = UITheme.Auto; // default to auto theme
+        private bool _isLoadingRecentFile;
+        private string _loadingFileName;
+        private Fluent.Backstage _backstageToClose;
+        public UITheme Theme
         {
-            this.ActiveDocument = null;
-            RefreshRibbonButtonEnabledStatus();
+            get => _theme;
+            set { if (value != _theme)
+                {
+                    _theme = value;
+                    Options.Theme = _theme;
+                    _eventAggregator.PublishAsync(new ChangeThemeEvent(_theme));
+                    NotifyOfPropertyChange(() => Theme);
+                    NotifyOfPropertyChange(() => ThemeImageResource);
+                }
+            }
         }
 
-        public void Handle(RefreshOutputTargetsEvent message)
+        public bool IsActiveDocumentVertipaqAnalyzerRunning { get; private set; }
+
+        public Task HandleAsync(AllDocumentsClosedEvent message, CancellationToken cancellationToken)
         {
-            // TODO: re-try this code with the latest version of fluent ribbon as currently the layout overlaps when the ResultsTargets collection changes 
-            // NotifyOfPropertyChange(() => ResultsTargets);
+            try
+            {
+                this.ActiveDocument = null;
+                RefreshRibbonButtonEnabledStatus();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), "IHandle<AllDocumentsClosedEvent>", "Error updating ribbon for all documents closed event");
+            }
+            return Task.CompletedTask;
         }
 
-        public void Handle(CancelConnectEvent message)
+        public Task HandleAsync(RefreshOutputTargetsEvent message, CancellationToken cancellationToken)
+        {
+            // This message tell fluent ribbon that the ResultsTargets collection has changed
+            // and should be re-evaluated
+            NotifyOfPropertyChange(() => ResultsTargets);
+            return Task.CompletedTask;
+        }
+
+        public Task HandleAsync(CancelConnectEvent message, CancellationToken cancellationToken)
         {
             _isConnecting = false;
+            return Task.CompletedTask;
+        }
+
+        public bool CanLoadPowerBIPerformanceData => ActiveDocument != null;
+
+        public void LoadPowerBIPerformanceData()
+        {
+            if (this.ActiveDocument == null)
+            {
+                MessageBoxEx.Show("You cannot load Power BI Performance data when you do not have a document window open", "Load Power BI Performance Data");
+                return;
+            }
+
+            // Configure open file dialog box
+            using (var dlg = new System.Windows.Forms.OpenFileDialog()
+            {
+                Title = "Open Power BI Performance Data",
+                FileName = "PowerBIPerformanceData.json",
+                DefaultExt = ".json",
+                Filter = "Power BI Performance Data (*.json)|*.json"
+            })
+            {
+                // Show open file dialog box
+                System.Windows.Forms.DialogResult result = dlg.ShowDialog();
+
+                // Process open file dialog box results 
+                if (result == System.Windows.Forms.DialogResult.OK)
+                {
+                    // Open document 
+                    var fileName = dlg.FileName;
+                    // check if PerfData Window is already open and use that
+                    var perfDataWindow = this.ActiveDocument.ToolWindows.FirstOrDefault(win => (win as PowerBIPerformanceDataViewModel) != null) as PowerBIPerformanceDataViewModel;
+
+                    if (perfDataWindow == null)
+                    {
+                        // todo - get viewmodel from IoC container
+                        perfDataWindow = IoC.Get<PowerBIPerformanceDataViewModel>(); // new PowerBIPerformanceDataViewModel(_eventAggregator, Options);
+                        _eventAggregator.SubscribeOnUIThread(perfDataWindow);
+                        this.ActiveDocument.ToolWindows.Add(perfDataWindow);
+                    } 
+                    else
+                    {
+                        // make sure the window is not hidden
+                        perfDataWindow.IsVisible = true;
+                    }
+
+                    // load the perfomance data
+                    perfDataWindow.FileName = fileName;
+
+                    // set the performance window as the active tab
+                    perfDataWindow.Activate();
+                }
+            }
+        }
+
+
+        public bool DisplayQueryBuilder {
+            get => ActiveDocument?.ShowQueryBuilder??false;
+            set {
+                ActiveDocument.ShowQueryBuilder = value;
+                NotifyOfPropertyChange();
+            }
+        }
+
+        public async void RunBenchmark()
+        {
+            await _eventAggregator.PublishAsync(new RunQueryEvent(this.SelectedTarget, this.SelectedRunStyle, RunQueryEvent.BenchmarkTypes.QueryBenchmark));
+        }
+        public async void RunServerFEBenchmark()
+        {
+            await _eventAggregator.PublishAsync(new RunQueryEvent(this.SelectedTarget, this.SelectedRunStyle, RunQueryEvent.BenchmarkTypes.ServerFEBenchmark));
+        }
+
+        public async void CaptureDiagnostics()
+        {
+            if (ActiveDocument != null)
+            {
+
+            }
+            var capdiagDialog = new CaptureDiagnosticsViewModel(this, Options, _eventAggregator);
+            _eventAggregator.SubscribeOnUIThread(capdiagDialog);
+            await _windowManager.ShowDialogBoxAsync(capdiagDialog);
+            _eventAggregator.Unsubscribe(capdiagDialog);
+        }
+
+        public Task HandleAsync(UpdateHotkeys message, CancellationToken cancellationToken)
+        {
+            // TODO - should we create an attribute for these properties so that we don't
+            //        have to maintain a hard coded list?
+            NotifyOfPropertyChange(nameof(CommentSelectionTitle));
+            NotifyOfPropertyChange(nameof(UncommentSelectionTitle));
+            NotifyOfPropertyChange(nameof(ToLowerTitle));
+            NotifyOfPropertyChange(nameof(ToUpperTitle));
+            NotifyOfPropertyChange(nameof(FormatQueryTitle));
+            NotifyOfPropertyChange(nameof(RunQueryTitle));
+            return Task.CompletedTask;
+        }
+
+        public void CrashTest()
+        {
+            throw new Exception("This is a fake exception to test the crash reporting");
+        }
+
+        public void OpenConnection()
+        {
+            ActiveDocument?.OpenConnection();
+        }
+
+        public void CloseConnection()
+        {
+            ActiveDocument?.CloseConnection();
+        }
+
+        public bool CanShowViewAsDialog
+        {
+            get =>
+                (ActiveDocument?.IsConnected ?? false)
+                  && !(ActiveDocument?.IsViewAsActive ??false)
+                  && !(ActiveDocument?.IsQueryRunning ?? false)
+                  && !(ActiveDocument?.IsVertipaqAnalyzerRunning ?? false);
+            
+        }
+        public void ShowViewAsDialog()
+        {
+            ActiveDocument?.ShowViewAsDialog();
+        }
+
+        public Task HandleAsync(SetRunStyleEvent message, CancellationToken cancellationToken)
+        {
+            SelectedRunStyle = RunStyles.FirstOrDefault(rs => rs.Icon == message.Icon);
+            return Task.CompletedTask;
+        }
+
+        public void RunStyleClicked(RunStyle runStyle)
+        {
+            if (runStyle == null)
+            {
+                // todo - log an error
+                return;
+            }
+            System.Diagnostics.Debug.WriteLine("RunStyle Clicked");
+            SelectedRunStyle = runStyle;
+            RunQuery();
+        }
+
+        public Task HandleAsync(ChangeThemeEvent message, CancellationToken cancellationToken)
+        {
+            Theme = message.Theme;
+            NotifyOfPropertyChange(nameof(ThemeImageResource));
+            return Task.CompletedTask;
+        }
+
+        public Task HandleAsync(DatabaseChangedEvent message, CancellationToken cancellationToken)
+        {
+            try
+            {
+                RefreshConnectionDetails(ActiveDocument?.Connection);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(RibbonViewModel), "IHandle<DatabaseChangedEvent>", "error handling event");
+                ActiveDocument?.OutputError(ex.Message);
+            }
+            return Task.CompletedTask;
+        }
+
+        public bool CanDiscoverQueryDependencies => CanRunQuery;
+        public bool IsLoadingRecentFile
+        {
+            get => _isLoadingRecentFile;
+            set
+            {
+                _isLoadingRecentFile = value;
+                NotifyOfPropertyChange(() => IsLoadingRecentFile);
+            }
+        }
+        public string LoadingFileName
+        {
+            get => _loadingFileName;
+            set
+            {
+                _loadingFileName = value;
+                NotifyOfPropertyChange(() => LoadingFileName);
+            }
+        }
+        public void DiscoverQueryDependencies()
+        {
+            ActiveDocument?.DiscoverQueryDependencies();
+        }
+
+        /// <summary>
+        /// Handles the ViewMetricsCompleteEvent to update CanShowModelDiagram when VPA data becomes available.
+        /// This enables the Model Diagram button for offline .daxx files that contain VPA data.
+        /// </summary>
+        public Task HandleAsync(ViewMetricsCompleteEvent message, CancellationToken cancellationToken)
+        {
+            // Notify that Model Diagram availability may have changed
+            NotifyOfPropertyChange(() => CanShowModelDiagram);
+            return Task.CompletedTask;
         }
     }
 }

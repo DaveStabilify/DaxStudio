@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel.Composition;
 using System.Threading.Tasks;
 using DaxStudio.Interfaces;
@@ -8,16 +8,20 @@ using DaxStudio.UI.Interfaces;
 using Serilog;
 using DaxStudio.UI.Extensions;
 using System.Data;
+using DaxStudio.Common.Extensions;
+using DaxStudio.Core.Interfaces;
 
-namespace DaxStudio.UI.Model
+namespace DaxStudio.UI.ResultsTargets
 {
     // This is the default target which writes the results out to
     // the built-in grid
     [Export(typeof(IResultsTarget))]
-    public class ResultsTargetGrid: IResultsTarget 
+    public class ResultsTargetGrid: PropertyChangedBase, IResultsTarget 
     {
         private readonly IEventAggregator _eventAggregator;
         private readonly IGlobalOptions _options;
+
+
 
         [ImportingConstructor]
         public ResultsTargetGrid(IEventAggregator eventAggregator, IGlobalOptions options)
@@ -27,76 +31,76 @@ namespace DaxStudio.UI.Model
         }
 
         #region Standard Properties
-        public string Name => "Grid";
+        public string Name => "Results Table";
         public string Group => "Standard";
         public int DisplayOrder => 10;
         public bool IsDefault => true;
         public bool IsAvailable => true;
-        public string Message => string.Empty;
-        public OutputTargets Icon => OutputTargets.Grid;
-
+        public string Message => "Query results will be displayed in a data grid";
+        public OutputTarget Icon => OutputTarget.Grid;
+        public string ImageResource => "results_tableDrawingImage";
+        public string Tooltip => "Displays the Query results in a data grid";
         public bool IsEnabled => true;
 
         public string DisabledReason => "";
         #endregion
 
         // This is the core method that handles the output of the results
-        public Task OutputResultsAsync(IQueryRunner runner)
+        public async Task OutputResultsAsync(IQueryRunner runner, IQueryTextProvider textProvider, string filename)
         {
             // Read the AutoFormat option from the options singleton
             bool autoFormat = _options.ResultAutoFormat;
-            return Task.Run(() =>
+            string autoDateFormat = _options.DefaultDateAutoFormat;
+            await Task.Run(() =>
                 {
                     long durationMs = 0;
                     int queryCnt = 1;
-                    try
-                    {
-                        runner.OutputMessage("Query Started");
-                        var sw = Stopwatch.StartNew();
 
-                        var dq = runner.QueryText;
-                        //var res = runner.ExecuteDataTableQuery(dq);
-                        using (var dataReader = runner.ExecuteDataReaderQuery(dq))
+                    // Clear any existing results
+                    runner.ResultsDataSet = new DataSet();
+                    runner.SetResultsMessage("Waiting for query results", OutputTarget.Grid);
+                    runner.RowCount = 0;
+
+                    var sw = Stopwatch.StartNew();
+
+                    var dq = textProvider.QueryText;
+                    //var res = runner.ExecuteDataTableQuery(dq);
+                    var isSessionsDmv = dq.Contains(Common.Constants.SessionsDmv, StringComparison.OrdinalIgnoreCase);
+
+
+                    using (var dataReader = runner.ExecuteDataReaderQuery(dq, textProvider.ParameterCollection))
+                    {
+                        if (dataReader != null)
                         {
-                            if (dataReader != null)
+                            Log.Verbose("Start Processing Grid DataReader (Elapsed: {elapsed})" , sw.ElapsedMilliseconds);
+                            runner.ResultsDataSet = dataReader.ConvertToDataSet(autoFormat, isSessionsDmv, autoDateFormat, runner.Connection);
+                            Log.Verbose("End Processing Grid DataReader (Elapsed: {elapsed})", sw.ElapsedMilliseconds);
+
+                            sw.Stop();
+
+                            // add extended properties to DataSet
+                            runner.ResultsDataSet.ExtendedProperties.Add("QueryText", dq);
+                            runner.ResultsDataSet.ExtendedProperties.Add("IsDiscoverSessions", isSessionsDmv);
+
+                            durationMs = sw.ElapsedMilliseconds;
+                            var rowCnt = runner.ResultsDataSet.Tables[0].Rows.Count;
+                            foreach (DataTable tbl in runner.ResultsDataSet.Tables)
                             {
-                                Log.Verbose("Start Processing Grid DataReader (Elapsed: {elapsed})" , sw.ElapsedMilliseconds);
-                                runner.ResultsDataSet = dataReader.ConvertToDataSet(autoFormat);
-                                Log.Verbose("End Processing Grid DataReader (Elapsed: {elapsed})", sw.ElapsedMilliseconds);
-
-                                sw.Stop();
-                                durationMs = sw.ElapsedMilliseconds;
-                                var rowCnt = runner.ResultsDataSet.Tables[0].Rows.Count;
-                                foreach (DataTable tbl in runner.ResultsDataSet.Tables)
-                                {
-                                    runner.OutputMessage(
-                                        string.Format("Query {2} Completed ({0:N0} row{1} returned)", tbl.Rows.Count,
-                                                        tbl.Rows.Count == 1 ? "" : "s", queryCnt));
-                                    queryCnt++;
-                                }
-                                runner.RowCount = rowCnt;
-                                // activate the result only when Counters are not selected...
-                                runner.ActivateResults();
-                                runner.OutputMessage("Query Batch Completed", durationMs);
+                                runner.OutputMessage(
+                                    string.Format("Query {2} Completed ({0:N0} row{1} returned)", tbl.Rows.Count,
+                                                    tbl.Rows.Count == 1 ? "" : "s", queryCnt));
+                                queryCnt++;
                             }
-                            else
-                                runner.OutputError("Query Batch Completed with errors", durationMs);
-
+                            runner.RowCount = rowCnt;
+                            // activate the result only when Counters are not selected...
+                            runner.ActivateResults();
+                            runner.OutputMessage("Query Batch Completed", durationMs);
                         }
-                        
+                        else
+                            runner.OutputError("Query Batch Completed with errors listed above (you may need to scroll up)", durationMs);
+
                     }
-                    catch (Exception ex)
-                    {
-                        Log.Error("{class} {method} {message} {stacktrace}", "ResultsTargetGrid","OutputQueryResultsAsync",ex.Message, ex.StackTrace);
-                        runner.ActivateOutput();
-                        runner.OutputError(ex.Message);
-                        runner.OutputError("Query Batch Completed with erros", durationMs);
-                    }
-                    finally
-                    {
-                        
-                        runner.QueryCompleted();
-                    }
+
                 });
         }
 

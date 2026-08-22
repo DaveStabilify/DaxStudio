@@ -1,16 +1,21 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using DaxStudio.Interfaces;
 using Microsoft.AnalysisServices;
 using System.Xml;
 using System.Timers;
 using Caliburn.Micro;
-using ADOTabular.AdomdClientWrappers;
 using DaxStudio.QueryTrace.Interfaces;
 using Serilog;
 using DaxStudio.Common;
 using Polly;
+using ADOTabular.Enums;
+using Trace = Microsoft.AnalysisServices.Trace;
+using DaxStudio.Common.Enums;
+using DaxStudio.Common.Extensions;
+using System.Globalization;
 
 
 namespace DaxStudio.QueryTrace
@@ -19,10 +24,10 @@ namespace DaxStudio.QueryTrace
     {
 
         #region public IQueryTrace interface
-        public Task StartAsync(int startTimeoutSec)
+        public async Task StartAsync(int startTimeoutSec)
         {
             TraceStartTimeoutSecs = startTimeoutSec;
-            return Task.Run(() => Start());
+            await Task.Run(Start);
         }
 
         public void Stop()
@@ -30,7 +35,7 @@ namespace DaxStudio.QueryTrace
             Stop(true);
         }
 
-        public int TraceStartTimeoutSecs {get; private set;}
+        public int TraceStartTimeoutSecs { get; private set; }
 
         public void Stop(bool shouldDispose)
         {
@@ -38,6 +43,8 @@ namespace DaxStudio.QueryTrace
             {
                 Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "Stop", "entering");
                 Status = QueryTraceStatus.Stopping;
+                _traceStarted = false;
+
                 if (_trace != null)
                 {
                     _trace.OnEvent -= OnTraceEventInternal;
@@ -47,18 +54,13 @@ namespace DaxStudio.QueryTrace
                         {
                             if (_startingTimer.Enabled)
                             {
-                                Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "Stop", "stopping ping timer");
-                                _startingTimer.Stop();
-                                _startingTimer.Elapsed -= OnTimerElapsed;
-                                _connection.Close(false);
+                                StopTimeoutTimer();
                             }
                         }
 
                         if (shouldDispose)
                         {
                             Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "Stop", "Disposing underlying trace");
-                            //_trace.OnEvent -= OnTraceEventInternal;
-                            //_trace.Drop();
                             DisposeTrace();
                         }
                         else
@@ -73,131 +75,257 @@ namespace DaxStudio.QueryTrace
                     {
                         System.Diagnostics.Debug.WriteLine(e);
                     }
-                } else
+                } 
+                else
                 {
                     Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "Stop", "skipping stop, trace is null");
                 }
-                _traceStarted = false;
+
                 Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "Stop", "exiting");
             }
             catch (Exception ex)
             {
-                Execute.OnUIThread( () => RaiseError("QueryTraceEngine.Stop:" + ex.Message ));
+                Execute.OnUIThread(() => RaiseError("QueryTraceEngine.Stop:" + ex.Message));
             }
         }
 
 
-        public QueryTraceStatus Status
-        {
-	        get { return _status;  }
-            private set {_status = value;}
-        }
+        public QueryTraceStatus Status { get; private set; }
 
-        public List<DaxStudioTraceEventClass> Events { get; } 
+        public List<DaxStudioTraceEventClass> Events { get; }
 
-        public event TraceEventHandler TraceEvent;
-        public event EventHandler<IList<DaxStudioTraceEventArgs>> TraceCompleted;
+        public event EventHandler<DaxStudioTraceEventArgs> TraceEvent;
+        public event EventHandler TraceCompleted;
         public event EventHandler TraceStarted;
         public event EventHandler<string> TraceError;
+        public event EventHandler<string> TraceWarning;
+        #endregion
 
-#endregion
-
-#region Internal implementation
+        #region Internal implementation
         private Server _server;
         private Trace _trace;
-        private DateTime utcPingStart;
-        private QueryTraceStatus _status;
+        private DateTime _utcPingStart;
         private string _connectionString;
-        private ADOTabular.ADOTabularConnection _connection;
-        private AdomdType _connectionType;
+        private readonly IConnectionManager _connectionManager;
+        private readonly AdomdType _connectionType;
         private string _sessionId;
-        //private List<DaxStudioTraceEventClass> _eventsToCapture;
+        private int _spid;
         private Timer _startingTimer;
-        private List<DaxStudioTraceEventArgs> _capturedEvents = new List<DaxStudioTraceEventArgs>();
-        private IGlobalOptions _globalOptions;
-        private object connectionLockObj = new object();
-        private bool _filterForCurrentSession = true;
-        private readonly string _powerBIFileName = string.Empty;
-        public QueryTraceEngine(string connectionString, AdomdType connectionType, string sessionId, string applicationName, string databaseName, List<DaxStudioTraceEventClass> events, IGlobalOptions globalOptions, bool filterForCurrentSession, string powerBIFileName)
+        private readonly IGlobalOptionsBase _globalOptions;
+        private readonly object _connectionLockObj = new object();
+        private readonly bool _filterForCurrentSession;
+        private readonly string _powerBiFileName;
+        private readonly string _suffix = string.Empty;
+        private bool _isInternalQuery;
+        private Policy _pingRetryPolicy;
+
+        public QueryTraceEngine(IConnectionManager connectionManager, List<DaxStudioTraceEventClass> events, IGlobalOptions globalOptions, bool filterForCurrentSession, string powerBiFileName, string suffix)
         {
-            Log.Verbose("{class} {method} {event} connstr: {connnectionString} sessionId: {sessionId}", "QueryTraceEngine", "<Constructor>", "Start", connectionString, sessionId);
+            if (connectionManager == null) throw new ArgumentNullException(nameof(connectionManager));
+
+            Log.Verbose("{class} {method} {event} connectionString: {connectionString}", "QueryTraceEngine", "<Constructor>", "Start", connectionManager.ConnectionString);
             _globalOptions = globalOptions;
-            
+            _connectionManager = connectionManager;
+            _suffix = suffix;
             Status = QueryTraceStatus.Stopped;
-            ConfigureTrace(connectionString, connectionType, sessionId, applicationName,databaseName, filterForCurrentSession);
+
+            // ping the connection to make sure it is connected
+            _connectionManager.Ping();
+
+            _sessionId = connectionManager.SessionId;
+            _spid = connectionManager.SPID;
+            _connectionType = connectionManager.Type;
+            _applicationName = connectionManager.ApplicationName;
+            _databaseName = connectionManager.DatabaseName;
+
+            _connectionString = AdjustConnectionString(_connectionManager.ConnectionString);
             Events = events;
             _filterForCurrentSession = filterForCurrentSession;
-            _powerBIFileName = powerBIFileName;
+            _powerBiFileName = powerBiFileName;
+
+            _pingRetryPolicy = Policy
+                .Handle<Exception>()
+                .WaitAndRetry(
+                    3,
+                    retryAttempt => TimeSpan.FromMilliseconds(Math.Pow(2, retryAttempt) * 100),
+                    (exception, timeSpan, context) => {
+                        Log.Error(exception, "{class} {method}", "QueryTraceEngine", "OnTimerElapsed");
+                        System.Diagnostics.Debug.WriteLine("Error pinging trace connection: " + exception.Message);
+                        // TODO - should we raise event aggregator 
+                        RaiseWarning("There was an error while pinging the trace - retrying");
+                    }
+                );
+
             Log.Verbose("{class} {method} {event}", "QueryTraceEngine", "<Constructor>", "End - event count" + events.Count);
         }
 
-        private void ConfigureTrace(string connectionString, AdomdType connectionType, string sessionId, string applicationName, string databaseName,bool filterForCurrentSession)
+        public QueryTraceEngine(string connectionString, AdomdType connectionType, string sessionId, string applicationName, string databaseName, List<DaxStudioTraceEventClass> events, IGlobalOptionsBase globalOptions, bool filterForCurrentSession, string powerBiFileName, string suffix)
         {
-            Log.Verbose("{class} {method} {event} ConnStr: {connectionString} SessionId: {sessionId}", "QueryTraceEngine", "ConfigureTrace", "Start",connectionString, sessionId);
+            Log.Verbose("{class} {method} {event} connectionString: {connectionString}", "QueryTraceEngine", "<Constructor>", "Start", connectionString);
+            _globalOptions = globalOptions;
+            Status = QueryTraceStatus.Stopped;
+            _suffix = suffix;
             _sessionId = sessionId;
             _connectionType = connectionType;
             _applicationName = applicationName;
             _databaseName = databaseName;
 
+            _connectionString = AdjustConnectionString(connectionString);
+            Events = events;
+            _filterForCurrentSession = filterForCurrentSession;
+            _powerBiFileName = powerBiFileName;
+            ConfigureRetries();
+            Log.Verbose("{class} {method} {event}", "QueryTraceEngine", "<Constructor>", "End - event count" + events.Count);
+        }
+
+        private void ConfigureRetries()
+        {
+            _pingRetryPolicy = Policy
+                        .Handle<Exception>()
+                        .WaitAndRetry(
+                            3,
+                            retryAttempt => TimeSpan.FromMilliseconds(Math.Pow(2, retryAttempt) * 100),
+                            (exception, timeSpan, context) => {
+                                Log.Error(exception, "{class} {method}", "QueryTraceEngine", "OnTimerElapsed");
+                                System.Diagnostics.Debug.WriteLine("Error pinging trace connection: " + exception.Message);
+                                // TODO - should we raise event aggregator 
+                                RaiseWarning("There was an error while pinging the trace - retrying");
+                            }
+                        );
+        }
+
+        private string AdjustConnectionString(string connectionString)
+        {
+            Log.Verbose("{class} {method} {event} ConnStr: {connectionString}", nameof(QueryTraceEngine), nameof(AdjustConnectionString), "Start", connectionString);
+
             var connStrBuilder = new System.Data.OleDb.OleDbConnectionStringBuilder(connectionString);
             connStrBuilder.Remove("MDX Compatibility");
             connStrBuilder.Remove("Cell Error Mode");
+            connStrBuilder.Remove("Roles");
+            connStrBuilder.Remove("EffectiveUsername");
+            connStrBuilder.Remove("Authentication Scheme");
+            connStrBuilder.Remove("Ext Auth Info");
             connStrBuilder["SessionId"] = _sessionId;
             if (_databaseName.Length > 0) connStrBuilder["Initial Catalog"] = _databaseName;
-            _connectionString = connStrBuilder.ToString();
-            //_connectionString = string.Format("{0};SessionId={1}", connectionString, sessionId);
-            //_connectionString = _connectionString.Replace("MDX Compatibility=1;", ""); // remove MDX Compatibility setting
-            //_connectionString = _connectionString.Replace("Cell Error Mode=TextValue;", ""); // remove MDX Compatibility setting
+            Log.Verbose("{class} {method} {event} ", nameof(QueryTraceEngine), nameof(AdjustConnectionString), "End");
 
-            Log.Verbose("{class} {method} {event} ", "QueryTraceEngine", "ConfigureTrace", "End");
+            return connStrBuilder.ToString();
+
         }
-        private void SetupTrace(Trace trace, List<DaxStudioTraceEventClass> events)
+        private void SetupTraceEvents(Trace trace, List<DaxStudioTraceEventClass> events)
         {
-            Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "SetupTrace", "entering"); 
+            Log.Verbose(Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(SetupTraceEvents), "entering");
+
+            PopulateTraceEvents(trace, events);
+
+            try
+            {
+                trace.Update(UpdateOptions.Default, UpdateMode.CreateOrReplace);
+            }
+            catch (Exception ex) when (IsUnsupportedTraceColumnError(ex))
+            {
+                // The set of columns supported by an event varies between engine versions. If the cached
+                // list of supported columns is out of date (eg. the connection was switched to a different
+                // server) we refresh it and rebuild the events before trying again.
+                Log.Warning(ex, Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(SetupTraceEvents), $"Trace creation failed with an unsupported column error, refreshing the supported trace columns and retrying: {ex.Message}");
+                _connectionManager.ClearSupportedTraceEventClasses();
+                PopulateTraceEvents(trace, events);
+                trace.Update(UpdateOptions.Default, UpdateMode.CreateOrReplace);
+            }
+
+            Log.Verbose(Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(SetupTraceEvents), "exiting");
+        }
+
+        private void PopulateTraceEvents(Trace trace, List<DaxStudioTraceEventClass> events)
+        {
             trace.Events.Clear();
-            // Add CommandBegin so we can catch the heartbeat events
-            trace.Events.Add(TraceEventFactory.Create(TraceEventClass.CommandBegin));
+            // Add CommandBegine & DiscoverBegin so we can catch the heartbeat events
+            trace.Events.Add(TraceEventFactory.Create(TraceEventClass.DiscoverBegin, _connectionManager.SupportedTraceEventClasses[DaxStudioTraceEventClass.DiscoverBegin])); 
+            trace.Events.Add(TraceEventFactory.Create(TraceEventClass.CommandBegin, _connectionManager.SupportedTraceEventClasses[DaxStudioTraceEventClass.CommandBegin]));
             // Add QueryEnd so we know when to stop the trace
-            trace.Events.Add(TraceEventFactory.Create(TraceEventClass.QueryEnd));
+            trace.Events.Add(TraceEventFactory.Create(TraceEventClass.QueryEnd, _connectionManager.SupportedTraceEventClasses[DaxStudioTraceEventClass.QueryEnd]));
             
             // catch the events in the ITraceWatcher
             foreach (DaxStudioTraceEventClass eventClass in events)
             {
                 TraceEventClass amoEventClass = (TraceEventClass)eventClass;
-                if (trace.Events.Find(amoEventClass) != null)
+
+                // if the Events collection already contains this event or if the connection does not support it then do not add it
+                if (trace.Events.Find(amoEventClass) != null || !_connectionManager.SupportedTraceEventClasses.ContainsKey(eventClass))
                     continue;
 
-                var trcEvent = TraceEventFactory.Create(amoEventClass);
+                var trcEvent = TraceEventFactory.Create(amoEventClass, _connectionManager.SupportedTraceEventClasses[eventClass]);
                 trace.Events.Add(trcEvent);
             }
-            trace.Update();
-            Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "SetupTrace", "exiting");
+
+            LogTraceEventColumns(trace);
+        }
+
+        // Logs the events and columns that we are requesting so that if the server rejects any of them
+        // we can see exactly what was requested in the log file
+        private void LogTraceEventColumns(Trace trace)
+        {
+            if (!Log.IsEnabled(Serilog.Events.LogEventLevel.Verbose)) return;
+
+            foreach (TraceEvent evt in trace.Events)
+            {
+                var columns = new List<string>();
+                foreach (TraceColumn col in evt.Columns) columns.Add($"{col}({(int)col})");
+                Log.Verbose(Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(SetupTraceEvents), $"Server: {_server?.Version} Event: {evt.EventID}({(int)evt.EventID}) Columns: {string.Join(",", columns)}");
+            }
+        }
+
+        private static bool IsUnsupportedTraceColumnError(Exception ex)
+        {
+            var currentEx = ex;
+            while (currentEx != null)
+            {
+                if (currentEx.Message.IndexOf("does not contain the column", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                currentEx = currentEx.InnerException;
+            }
+            return false;
         }
 
         private XmlNode GetSpidFilter(int spid)
         {
-            var filterXml = string.Format(
-                "<Equal xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\"><ColumnID>{0}</ColumnID><Value>{1}</Value></Equal>"
-                , (int)TraceColumn.Spid
-                , spid );
+            var filterXml =
+                $"<Equal xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\"><ColumnID>{(int) TraceColumn.Spid}</ColumnID><Value>{spid}</Value></Equal>";
             var doc = new XmlDocument();
+            doc.XmlResolver = null; // Prevent XXE attacks
             doc.LoadXml(filterXml);
             return doc;
         }
 
-        private XmlNode GetSessionIdFilter(string sessionId, string applicationName)
+        private XmlNode GetSessionIdFilter(string sessionId, string applicationName, int spid)
         {
-            string filterTemplate = "<Or xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\">" +
-                        "<Equal><ColumnID>{0}</ColumnID><Value>{1}</Value></Equal>" +
-                        "<Equal><ColumnID>{2}</ColumnID><Value>{3}</Value></Equal>" +
+            // NOTE: the columns used in this filter must exist on at least one of the events in the trace.
+            //       The ApplicationName column is not available on all events (eg. SSAS 2025 removed it from
+            //       the VertiPaqSEQuery* events) but the DiscoverBegin/CommandBegin/QueryEnd events are always
+            //       added to the trace and they do support it.
+            string filterTemplate =
+                "<Or xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\">" +
+                "<Or xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\">" +
+                        "<Or xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine\">" +
+                          "<Equal><ColumnID>{0}</ColumnID><Value>{1}</Value></Equal>" +
+                          "<Equal><ColumnID>{2}</ColumnID><Value>{3}</Value></Equal>" +
+                        "</Or>" +
+                        "<Equal><ColumnID>{4}</ColumnID><Value>{5}</Value></Equal>" +
+                        "</Or>" +
+                        "<Equal><ColumnID>{6}</ColumnID><Value>{7}</Value></Equal>" +
                         "</Or>";
-            var filterXml = string.Format(
+            var filterXml = string.Format(CultureInfo.InvariantCulture,
                 filterTemplate
                 , (int)TraceColumn.SessionID
                 , sessionId
                 , (int)TraceColumn.ApplicationName
-                , applicationName);
+                , applicationName //.TrimStart('\"').TrimEnd('\"')
+                , (int)TraceColumn.Spid
+                , spid
+                ,(int)TraceColumn.EventClass
+                ,(int)TraceEventClass.ExecutionMetrics
+                );
             var doc = new XmlDocument();
+            doc.XmlResolver = null; // Prevent XXE attacks
             doc.LoadXml(filterXml);
             return doc;
         }
@@ -206,44 +334,35 @@ namespace DaxStudio.QueryTrace
         {
             try
             {
-                Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "Start", "entering");
+                Log.Verbose("{class} {method} {message}", nameof(QueryTraceEngine), nameof(Start), "entering");
                 if (_trace != null)
                     if (_trace.IsStarted || Status == QueryTraceStatus.Starting || Status == QueryTraceStatus.Started)
                         return; // exit here if trace is already started
 
                 if (Status != QueryTraceStatus.Started)  Status = QueryTraceStatus.Starting;
                 Log.Verbose("{class} {method} {event}", "QueryTraceEngine", "Start", "Connecting to: " + _connectionString);
-                if (_connection != null) _connection.Dispose();
-                ConfigureTrace(_connectionString, _connectionType, _sessionId, _applicationName, _databaseName, _filterForCurrentSession);
-                _connection = new ADOTabular.ADOTabularConnection(_connectionString, _connectionType);
-                try
+
+                if (_connectionManager != null)
                 {
-                    _connection.Open();
+                    _connectionManager.Ping();
+                    _sessionId = _connectionManager.SessionId;
+                    _databaseName = _connectionManager.DatabaseName;
+                    _connectionString = AdjustConnectionString(_connectionManager.ConnectionString);
                 }
-                catch (Exception ex)
-                {
-                    Log.Error(ex, "{class} {method} {message}", "QueryTraceEngine", "Start (connection.open catch)", ex.Message);
-                    // try again?
-                    _connection.Open();
-                }
+
                 _trace = GetTrace();
-                SetupTrace(_trace, Events);
+                SetupTraceEvents(_trace, Events);
                
                 _trace.OnEvent += OnTraceEventInternal;
                 _trace.Start();
 
                 // create timer to "ping" the server with DISCOVER_SESSION requests
                 // until the trace events start to fire.
-                if (_startingTimer == null)
-                    _startingTimer = new Timer();
-                
-                _startingTimer.Interval = 500; 
-                _startingTimer.Elapsed += OnTimerElapsed;
-                _startingTimer.Enabled = true;
-                _startingTimer.Start();
-                utcPingStart = DateTime.UtcNow;
+                StartTimeoutTimer();
+
+                _utcPingStart = DateTime.UtcNow;
                 // Wait for Trace to become active
-                Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "Start", "exiting");
+                Log.Verbose("{class} {method} {message}", nameof(QueryTraceEngine), nameof(Start), "exiting");
             }
             catch (Exception ex)
             {
@@ -252,93 +371,36 @@ namespace DaxStudio.QueryTrace
             }
         }
 
-        //Task task;
-        //private void PingUntilTraceStarts()
-        //{
-        //    _pingTraceCancellationToken = new System.Threading.CancellationTokenSource();
-        //    // cancels the ping loop after the specified number of timeout seconds from global options
-        //    _pingTraceCancellationToken.CancelAfter(new TimeSpan(0, 0, _globalOptions.TraceStartupTimeout));
-        //    task = Task.Run(async () =>  // <- marked async
-        //    {
-        //        while (true)
-        //        {
-        //            PingTrace(_pingTraceCancellationToken);
-        //            await Task.Delay(10000, _pingTraceCancellationToken.Token); // <- await with cancellation
-        //        }
-        //    }, _pingTraceCancellationToken.Token);
 
-        //}
+        private void StartTimeoutTimer()
+        {
+            if (_startingTimer == null)
+            {
+                _startingTimer = new Timer(500);
+                _startingTimer.Elapsed += OnTimeoutTimerElapsed;
+            }
+            _traceStarted = false;
+            _startingTimer.Start();
+            Log.Debug(Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(StartTimeoutTimer), "Starting Timeout Timer");
+        }
 
-        //private void PingTrace(System.Threading.CancellationTokenSource token)
-        //{
-        //    try
-        //    {
-        //        var policy = Policy
-        //                        .Handle<Exception>()
-        //                        .WaitAndRetry(
-        //                            3,
-        //                            retryAttempt => TimeSpan.FromMilliseconds(Math.Pow(2, retryAttempt) * 100),
-        //                            (exception, timeSpan, context) =>
-        //                            {
-        //                                Log.Error(exception, "{class} {method}", "QueryTraceEngine", "PingTrace");
-        //                                System.Diagnostics.Debug.WriteLine("Error pinging trace connection: " + exception.Message);
-        //                            // TODO - should we raise event aggregator 
-        //                        }
-        //                        );
-
-        //        policy.Execute(() =>
-        //        {
-        //            if (_connection.State != System.Data.ConnectionState.Open) _connection.Open();
-        //            _connection.Ping();
-        //            Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "PingTrace", "Pinging Connection");
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        Execute.OnUIThread(() => RaiseError(ex));
-        //        //TODO stop trace and send message to reset UI
-        //    }
-        //    finally
-        //    {
-        //        // if past timeout then exit and display error
-        //        if ((DateTime.UtcNow - utcPingStart).Seconds > this.TraceStartTimeoutSecs)
-        //        {
-        //            _startingTimer.Stop();
-        //            DisposeTrace();
-        //            Execute.OnUIThread(() => RaiseError("Timeout exceeded attempting to start Trace"));
-        //        }
-        //    }
-        //}
-
-        private void OnTimerElapsed(object sender, ElapsedEventArgs e)
+        private void OnTimeoutTimerElapsed(object sender, ElapsedEventArgs e)
         {
             try
             {
-                //Execute.OnUIThread(() => {  // TODO - why did I put this on the UI thread???
-                    // lock to prevent multiple threads attempting to open the connection
-                    lock (connectionLockObj)
+                
+                _pingRetryPolicy.Execute(() => {
+                    Debug.WriteLine("Connection.PingTrace()");
+                    if ((DateTime.UtcNow - _utcPingStart).Seconds <= this.TraceStartTimeoutSecs)
                     {
-                     
-                        var policy = Policy
-                            .Handle<Exception>()
-                            .WaitAndRetry(
-                                3,
-                                retryAttempt => TimeSpan.FromMilliseconds(Math.Pow(2, retryAttempt) * 100),
-                                (exception, timeSpan, context) => {
-                                    Log.Error(exception,"{class} {method}", "QueryTraceEngine", "OnTimerElapsed");
-                                    System.Diagnostics.Debug.WriteLine("Error pinging trace connection: " + exception.Message);
-                                    // TODO - should we raise event aggregator 
-                                }
-                            );
-
-                        policy.Execute(() => {
-                            if (_connection.State != System.Data.ConnectionState.Open) _connection.Open();
-                            _connection.Ping(); 
+                        // lock to prevent multiple threads attempting to open the connection
+                        lock (_connectionLockObj)
+                        {
+                            _connectionManager.PingTrace();
                             Log.Verbose("{class} {method} {message}", "QueryTraceEngine", "OnTimerElapsed", "Pinging Connection");
-                        });
+                        }
                     }
-                    
-                //});
+                });
                 
             }
             catch (Exception ex)
@@ -348,12 +410,20 @@ namespace DaxStudio.QueryTrace
             }
             finally
             {
-                // if past timeout then exit and display error
-                if ((DateTime.UtcNow - utcPingStart).Seconds > this.TraceStartTimeoutSecs)
+
+                // if past timeout and the trace is not started then exit and display error
+                if ((DateTime.UtcNow - _utcPingStart).Seconds > this.TraceStartTimeoutSecs)
                 {
-                    _startingTimer.Stop();
-                    DisposeTrace();
-                    RaiseError("Timeout exceeded attempting to start Trace");
+                    // if we are past the timeout we should stop the timer
+                    if (_startingTimer.Enabled)
+                        StopTimeoutTimer();
+
+                    // if the trace has not started by this time then we should stop the trace and report an error
+                    if (!_traceStarted)
+                    {
+                        DisposeTrace();
+                        RaiseError("Timeout exceeded attempting to start Trace. You could try increasing this timeout in the Options");
+                    }
                 }
             }
         }
@@ -363,27 +433,47 @@ namespace DaxStudio.QueryTrace
             if (_trace == null)
             {
                 _server = new Server();
+                // if the document's connection has an access token copy that to the server object for the trace
+                var tomToken = AccessTokenHelper.ToTomToken(_connectionManager.AccessToken);
+                if (tomToken.HasValue)
+                {
+                    _server.AccessToken = tomToken.Value;
+                    _server.OnAccessTokenExpired = OnAccessTokenExpired;
+                }
                 _server.Connect(_connectionString);
             
-                _trace = _server.Traces.Add( string.Format("DaxStudio_Session_{0}", _sessionId));
+                _trace = _server.Traces.Add($"DaxStudio_Session_{_sessionId}_{_suffix}");
 
                 // Enable automatic filter only if DirectQuery is not enabled - otherwise, it will filter events in the trace event (slower, use DirectQuery with care!)
                 if ((!_globalOptions.TraceDirectQuery || Version.Parse(_server.Version).Major >= 14 ) && _filterForCurrentSession) {
-                    Log.Verbose("Activate filter {sessionId} - {applicationName}", _sessionId, _applicationName);
-                    _trace.Filter = GetSessionIdFilter(_sessionId, _applicationName);
+                    Log.Verbose("Activate filter {sessionId} - {applicationName} - {spid}", _sessionId, _applicationName, _spid);
+                    _trace.Filter = GetSessionIdFilter(_sessionId, _applicationName, _spid);
                 }
 
                 // set default stop time in case trace gets disconnected
                 _trace.StopTime = DateTime.UtcNow.AddHours(24);
-                _trace.Audit = true;
+                //_trace.Audit = true;
             }
             return _trace;
         }
 
-        public void OnTraceEvent( TraceEventArgs e)
+        private AccessToken OnAccessTokenExpired(AccessToken token)
         {
-            if (TraceEvent != null)
-                TraceEvent(this, e);
+            Log.Information("{class} {method} {message}", nameof(QueryTraceEngine), nameof(OnAccessTokenExpired), "Refreshing expired AccessToken");
+            // This callback runs synchronously (via GetResult()) on the thread driving the current
+            // trace operation. When we are stopping/dropping a trace that call is typically made on the
+            // UI thread during shutdown, so triggering an interactive sign-in prompt here would block
+            // the message pump and deadlock. We therefore only allow an interactive prompt while the
+            // trace is starting (a user-initiated action) and force a silent-only renewal while the
+            // trace is stopping - if the silent renewal fails the drop will error rather than hang.
+            var forceSilent = Status == QueryTraceStatus.Stopping;
+            var newToken = EntraIdHelper.RefreshToken(token, forceSilent).GetAwaiter().GetResult();
+            return newToken;
+        }
+
+        public void OnTraceEvent(DaxStudioTraceEventArgs e)
+        {
+            TraceEvent?.Invoke(this, e);
         }
 
         public void RaiseError( string message)
@@ -392,41 +482,63 @@ namespace DaxStudio.QueryTrace
             Log.Error("{class} {method} {message}", "QueryTraceEngine", "RaiseError", message);
         }
 
+        public void RaiseWarning(string message)
+        {
+            TraceWarning?.Invoke(this, message);
+            Log.Warning("{class} {method} {message}", "QueryTraceEngine", "RaiseWarning", message);
+        }
+
         public void RaiseError(Exception ex)
         {
+
             Exception e = ex;
             while (e.InnerException != null)
             {
                 e = e.InnerException;
             }
             TraceError?.Invoke(this, e.Message);
-            Log.Error(ex,"{class} {method} {message}", "QueryTraceEngine", "RaiseError", GetAllExceptionMessages( ex));
+            Log.Error(ex,"{class} {method} {message}", "QueryTraceEngine", "RaiseError", ex.GetInnerExceptionMessages());
             if (ex.InnerException != null)
                 Log.Error("{class} {method} {message}/n{stacktrace}", "QueryTraceEngine", "RaiseError (InnerException)", ex.InnerException.Message, ex.InnerException.StackTrace);
+            
         }
 
-        public string GetAllExceptionMessages(Exception ex)
-        {
-            var innerEx = ex;
-            var msg = "";
-            while (innerEx != null)
-            {
-                msg = innerEx.Message + "\n";
-                innerEx = innerEx.InnerException;
-            }
-            return msg;
-        }
 
+
+        // private variables
         private bool _traceStarted;
-        private string _applicationName;
+        private readonly string _applicationName;
         private string _databaseName;
         private string _activityId;
 
-        // private variables
         private void OnTraceEventInternal(object sender, TraceEventArgs e)
         {
             try
             {
+                // if any event arrives and the trace is not flagged as started then we should flag it as started
+                // and notify any subscribers and stop the timeout timer
+                if (!_traceStarted)
+                {
+                    System.Diagnostics.Debug.Print("Pending TraceEvent: {0}", e.EventClass.ToString());
+                    Log.Verbose("Pending TraceEvent: {EventClass} - {EventSubClass}", e.EventClass.ToString(), e.EventSubclass.ToString());
+                    Log.Verbose("Saving ActivityID: {ActivityID}", e[TraceColumn.ActivityID]);
+
+                    _traceStarted = true;
+                    StopTimeoutTimer();
+
+                    Status = QueryTraceStatus.Started;
+                    if (TraceStarted != null)
+                    {
+                        Log.Debug("{class} {method} {message}", "QueryTraceEngine", "OnTraceEventInternal", "Notifying subscribers that Trace has started");
+                        TraceStarted(this, null);
+                    }
+                    else
+                    {
+                        Log.Debug("{class} {method} {message}", "QueryTraceEngine", "OnTraceEventInternal", "No Trace started subscribers found");
+                    }
+                }
+
+                // we need to do additional filtering here for DirectQuery events since not all the events have the SessionID
                 if (_globalOptions.TraceDirectQuery && _filterForCurrentSession)
                 {
                     if ((e.SessionID != null) && (e.SessionID != _sessionId))
@@ -451,93 +563,87 @@ namespace DaxStudio.QueryTrace
                         }
                     }
                 }
-                // we are using CommandBegin as a "heartbeat" to check if the trace
-                // has started capturing events
-                if (!_traceStarted)
-                {
-                    System.Diagnostics.Debug.Print("Pending TraceEvent: {0}", e.EventClass.ToString());
-                    Log.Verbose("Pending TraceEvent: {EventClass} - {EventSubClass}", e.EventClass.ToString(), e.EventSubclass.ToString());
-                    Log.Verbose("Saving ActivityID: {ActivityID}", e[TraceColumn.ActivityID]);
 
-                    StopTimer();
-                    _traceStarted = true;
-                    _connection.Close(false);
-                    Status = QueryTraceStatus.Started;
-                    if (TraceStarted != null)
-                    {
-                        Log.Debug("{class} {method} {message}", "QueryTraceEngine", "OnTraceEventInternal", "Notifying subscribers that Trace has started");
-                        TraceStarted(this, null);
-                    }
-                    else
-                    {
-                        Log.Debug("{class} {method} {message}", "QueryTraceEngine", "OnTraceEventInternal", "No Trace started subscribers found");
-                    }
-                }
-                else
-                {
-                    System.Diagnostics.Debug.Print("TraceEvent: {0}", e.EventClass.ToString());
-                    Log.Verbose("TraceEvent: {EventClass} - {EventSubClass} - {ActivityId}", e.EventClass.ToString(), e.EventSubclass.ToString(), e[TraceColumn.ActivityID]);
-                    if (e.EventClass == TraceEventClass.QueryBegin)
-                    {
-                        // Save activityId and skip event handling
-                        _activityId = e[TraceColumn.ActivityID];
-                        Log.Verbose("Started ActivityId: {EventClass} - {ActivityId}", e.EventClass.ToString(), e[TraceColumn.ActivityID]);
-                        return;
-                    }
-                    
-                    OnTraceEvent(e);
-                    _capturedEvents.Add(new DaxStudioTraceEventArgs(e, _powerBIFileName));
-                    if (e.EventClass == TraceEventClass.QueryEnd)
-                    {
-                        // Raise an event with the captured events
-                        if (TraceCompleted != null)
-                            TraceCompleted(this, _capturedEvents);
-                        // reset the captured events collection
-                        _capturedEvents = new List<DaxStudioTraceEventArgs>();
+                
+                // exit early if this is a DiscoverBegin event (used for the trace heartbeat)
+                if (e.EventClass == TraceEventClass.DiscoverBegin) return;
 
-                        // Reset activity ID
-                        _activityId = null;
-                    }
+                // exit early if there is no text in the query
+                if ((e.EventClass == TraceEventClass.QueryBegin ||
+                        e.EventClass == TraceEventClass.QueryEnd) && e.TextData.StartsWith("/* PING */",   StringComparison.OrdinalIgnoreCase))
+                {
+                    Log.Verbose(Common.Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(OnTraceEventInternal), "Skipping empty statement");
+                    return;
                 }
+
+                // we don't want to show any events from internal DAX Studio generated queries
+                if ((e.EventClass == TraceEventClass.QueryBegin || e.EventClass == TraceEventClass.CommandBegin) && IsInternalQuery(e.TextData))
+                {
+                    _isInternalQuery = true;
+                }
+                if ((e.EventClass == TraceEventClass.QueryEnd || e.EventClass == TraceEventClass.CommandEnd) && IsInternalQuery(e.TextData))
+                {
+                    _isInternalQuery = false;
+                    return;
+                }
+                if (_isInternalQuery)
+                {
+                    Log.Verbose(Common.Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(OnTraceEventInternal), $"Skipping Internal Query event - EventClass:{e.EventClass.ToString()}");
+                    return;
+                }
+
+
+                System.Diagnostics.Debug.Print("TraceEvent: {0}", e.EventClass.ToString());
+                Log.Verbose("TraceEvent: {EventClass} - {EventSubClass} - {ActivityId}", e.EventClass.ToString(), e.EventSubclass.ToString(), e[TraceColumn.ActivityID]);
+                if (e.EventClass == TraceEventClass.QueryBegin)
+                {
+                    // Save activityId and skip event handling
+                    _activityId = e[TraceColumn.ActivityID];
+                    Log.Verbose("Started ActivityId: {EventClass} - {ActivityId}", e.EventClass.ToString(), e[TraceColumn.ActivityID]);
+                    //return;
+                }
+
+
+                OnTraceEvent(new DaxStudioTraceEventArgs(e, _powerBiFileName));
+
             }
             catch (Exception ex)
             {
-                Execute.OnUIThreadAsync(() => RaiseError(ex));
+                Execute.OnUIThread(() => RaiseError(ex));
             }
         }
 
-        private void StopTimer()
+        private static bool IsInternalQuery(string textData)
+        {
+            return textData.Contains(Constants.InternalQueryHeader);
+        }
+
+        private void StopTimeoutTimer()
         {
             if (!_startingTimer.Enabled)
+            {
+                Log.Debug(Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(StartTimeoutTimer), "Stop Timeout Timer requested, but timer is already disabled");
                 return;
+            }
             _startingTimer.Stop();
-            _startingTimer.Elapsed -= OnTimerElapsed;
+            _startingTimer.Elapsed -= OnTimeoutTimerElapsed;
+            Log.Debug(Constants.LogMessageTemplate, nameof(QueryTraceEngine), nameof(StartTimeoutTimer), "Stopped Timeout Timer");
         }
 
         private void ClearEventSubscribers()
         {
             TraceStarted = (EventHandler)Delegate.RemoveAll(TraceStarted, TraceStarted);
-            TraceEvent = (TraceEventHandler)Delegate.RemoveAll(TraceEvent, TraceEvent);
-            TraceCompleted = (EventHandler<IList<DaxStudioTraceEventArgs>>)Delegate.RemoveAll(TraceCompleted, TraceCompleted);
+            TraceEvent = (EventHandler<DaxStudioTraceEventArgs>)Delegate.RemoveAll(TraceEvent, TraceEvent);
+            TraceCompleted = (EventHandler)Delegate.RemoveAll(TraceCompleted, TraceCompleted);
             TraceError = (EventHandler<string>)Delegate.RemoveAll(TraceError, TraceError);
-        }
-
-        public void Update(string databaseName)
-        {
-            _databaseName = databaseName;
-            Update();
-        }
-        public void Update()
-        {
-            Stop(true);
-            _traceStarted = false;
-            Start();
+            TraceWarning = (EventHandler<string>)Delegate.RemoveAll(TraceWarning, TraceWarning);
         }
 
         #endregion
 
         public void DisposeTrace()
         {
+            _traceStarted = false;
             if (_trace == null) return; // exit here if trace has already been disposed
             _trace.OnEvent -= OnTraceEventInternal;
             try
@@ -550,7 +656,9 @@ namespace DaxStudio.QueryTrace
                 Log.Error(ex, "{Class} {Method} Exception while dropping query trace {message}", "QueryTraceEngine", "DisposeTrace", ex.Message);
             }
 
-            _trace.Dispose();
+            // TODO - do we need to call both DROP and DISPOSE ?? Sometimes causes hanging
+            //        need to check if AMO is also trying to drop the trace
+            //_trace.Dispose();
             _trace = null;
         }
 

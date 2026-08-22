@@ -1,21 +1,23 @@
-﻿using System;
-using System.Text.RegularExpressions;
+﻿using ADOTabular.AdomdClientWrappers;
+using ADOTabular.Interfaces;
+using System;
+using System.Globalization;
 
 namespace ADOTabular
 {
     public class ADOTabularDatabase
     {
         private ADOTabularModelCollection _modelColl;
-        private DateTime? _lastUpdate = null;
 
-        public ADOTabularDatabase(ADOTabularConnection adoTabConn, string databaseName, string databaseId, DateTime lastUpdate, string compatLevel, string roles)
+        public ADOTabularDatabase(IADOTabularConnection adoTabConn, string databaseName, string databaseId, DateTime lastUpdate, string compatLevel, string roles, string description)
         {
             Connection = adoTabConn;
             Name = databaseName;
             Id = databaseId;
-            _lastUpdate = lastUpdate;
+            LastUpdate = lastUpdate;
             CompatibilityLevel = compatLevel;
             Roles = roles;
+            Description = description;
         }
 
         public bool HasSchemaChanged()
@@ -25,9 +27,9 @@ namespace ADOTabular
                 var ddColl = Connection.Databases.GetDatabaseDictionary(Connection.SPID, true);
                 if (ddColl.Count == 0) return false; // no databases on server
                 var dd = ddColl[Name];
-                if (dd.LastUpdate > _lastUpdate)
+                if (dd.LastUpdate > LastUpdate)
                 {
-                    _lastUpdate = dd.LastUpdate;
+                    LastUpdate = dd.LastUpdate;
                     return true;
                 }
             }
@@ -36,29 +38,26 @@ namespace ADOTabular
                 // do nothing - probably trying to check for changes while query is still running
                 System.Diagnostics.Debug.WriteLine("HasSchemaChanged Error: {0}", ex.Message);
             }
-            catch (Exception)
-            {
-                throw;
-            }
+
             return false;
         }
 
+        public string Culture { get; internal set; } = string.Empty;
         public string Id { get; }
+        public DateTime LastUpdate { get; internal set; } = DateTime.MinValue;
 
         public string Name { get;
         //get { return _adoTabConn.PowerBIFileName == string.Empty? _databaseName: _adoTabConn.PowerBIFileName; }
         }
+        private string _caption = string.Empty;
+        public string Caption { get => string.IsNullOrEmpty(_caption) ? Name : _caption; set { _caption = value; } }
+        public ADOTabularModelCollection Models => _modelColl ??= new ADOTabularModelCollection(Connection, this);
 
-        public ADOTabularModelCollection Models
-        {
-            get { return _modelColl ?? (_modelColl = new ADOTabularModelCollection(Connection, this)); }
-        }
-
-        public ADOTabularConnection Connection { get; }
+        public IADOTabularConnection Connection { get; }
 
         public string CompatibilityLevel { get; }
 
-        public string Roles { get; }
+        public string Roles { get; private set; }
 
         // if the list of roles for the database contains
         public bool IsAdmin { get {
@@ -68,7 +67,7 @@ namespace ADOTabular
 
         public void ClearCache()
         {
-            Connection.ExecuteCommand(String.Format(@"
+            Connection.ExecuteCommand(string.Format(CultureInfo.InvariantCulture, @"
                 <Batch xmlns=""http://schemas.microsoft.com/analysisservices/2003/engine"">
                    <ClearCache>
                      <Object>
@@ -90,10 +89,28 @@ namespace ADOTabular
 
         //}
 
-        public MetadataImages MetadataImage
+
+        internal void RefreshRoles()
         {
-            get { return MetadataImages.Database; }
+            var resColl = new AdomdRestrictionCollection
+            {
+                { "CATALOG_NAME", Name }
+            };
+            var dsDatabases = Connection.GetSchemaDataSet("DBSCHEMA_CATALOGS", resColl);
+            var databaseTable = dsDatabases.Tables[0];
+            if (databaseTable.Rows.Count > 0)
+            {
+                var roles = databaseTable.Rows[0]["ROLES"].ToString();
+                Roles = roles;
+            }
+            else
+            {
+                Roles = string.Empty;
+            }
         }
 
+        public static MetadataImages MetadataImage => MetadataImages.Database;
+
+        public string Description { get; set; } = string.Empty;
     }
 }

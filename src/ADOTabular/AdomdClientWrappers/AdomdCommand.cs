@@ -1,60 +1,33 @@
-﻿extern alias ExcelAdomdClientReference;
-using System;
+﻿using System;
 using System.Data;
 
 namespace ADOTabular.AdomdClientWrappers
 {
-    public class AdomdCommand
+    public class AdomdCommand : IDisposable
     {
-        private Microsoft.AnalysisServices.AdomdClient.AdomdCommand _obj;
-        private ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdCommand _objExcel;
+        private Microsoft.AnalysisServices.AdomdClient.AdomdCommand _command;
 
         public AdomdCommand() { }
-        public AdomdCommand(Microsoft.AnalysisServices.AdomdClient.AdomdCommand obj)
+        public AdomdCommand(Microsoft.AnalysisServices.AdomdClient.AdomdCommand command)
         {
-            _obj = obj;
-        }
-        public AdomdCommand(ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdCommand obj)
-        {
-            _objExcel = obj;
+            _command = command;
         }
 
+        AdomdClientWrappers.AdomdConnection _internalConnection;
         public AdomdConnection Connection
         {
-            get
-            {
-                if (_obj != null)
-                {
-                    return new AdomdConnection(_obj.Connection);
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<AdomdConnection> f = delegate
-                    {
-                        return new AdomdConnection(_objExcel.Connection);
-                    };
-                    return f();
-                }
-            }
-
+            get { return _internalConnection; }
             set
             {
-                if (value.Type == AdomdType.AnalysisServices)
-                {
-                    if (_obj == null)
-                        _obj = new Microsoft.AnalysisServices.AdomdClient.AdomdCommand();
-                    _obj.Connection = (Microsoft.AnalysisServices.AdomdClient.AdomdConnection)value.UnderlyingConnection;
+                if (value == null) { 
+                    Dispose(); 
+                    return; 
                 }
-                else
-                {
-                    ExcelAdoMdConnections.VoidDelegate f = delegate
-                    {
-                        if (_objExcel == null)
-                            _objExcel = new ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdCommand();
-                        _objExcel.Connection = (ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdConnection)value.UnderlyingConnection;
-                    };
-                    f();
-                }
+
+                if (_command == null)
+                    _command = new Microsoft.AnalysisServices.AdomdClient.AdomdCommand();
+                _command.Connection = (Microsoft.AnalysisServices.AdomdClient.AdomdConnection)value.UnderlyingConnection;
+                _internalConnection = new AdomdConnection((Microsoft.AnalysisServices.AdomdClient.AdomdConnection)value.UnderlyingConnection);
             }
         }
 
@@ -62,34 +35,12 @@ namespace ADOTabular.AdomdClientWrappers
         {
             get
             {
-                if (_obj != null)
-                {
-                    return _obj.CommandText;
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<string> f = delegate
-                    {
-                        return _objExcel.CommandText;
-                    };
-                    return f();
-                }
+                return _command.CommandText;
             }
 
             set
             {
-                if (_obj != null)
-                {
-                    _obj.CommandText = value;
-                }
-                else
-                {
-                    ExcelAdoMdConnections.VoidDelegate f = delegate
-                    {
-                        _objExcel.CommandText = value;
-                    };
-                    f();
-                }
+                _command.CommandText = value;
             }
         }
 
@@ -97,186 +48,86 @@ namespace ADOTabular.AdomdClientWrappers
         {
             get
             {
-                if (_obj != null)
-                {
-                    return _obj.CommandType;
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<CommandType> f = delegate
-                    {
-                        return _objExcel.CommandType;
-                    };
-                    return f();
-                }
+                return _command.CommandType;
             }
 
             set
             {
-                if (_obj != null)
-                {
-                    _obj.CommandType = value;
-                }
-                else
-                {
-                    ExcelAdoMdConnections.VoidDelegate f = delegate
-                    {
-                        _objExcel.CommandType = value;
-                    };
-                    f();
-                }
+                _command.CommandType = value;
             }
         }
 
         public void Cancel()
         {
-            if (_obj != null)
-            {
-                _obj.Cancel();
-            }
-            else
-            {
-                ExcelAdoMdConnections.VoidDelegate f = delegate
-                {
-                    _objExcel.Cancel();
-                };
-                f();
-            }
+            _command?.Cancel();
         }
 
-        AdomdParameterCollection _parameters = new AdomdParameterCollection();
-        public AdomdParameterCollection Parameters
-        {
-            get
-            {
-                return _parameters;
-            }
-        }
-
-        public CellSet ExecuteCellSet()
-        {
-            if (_obj != null)
-            {
-                _obj.Parameters.Clear();
-                foreach (AdomdParameter param in _parameters)
-                {
-                    _obj.Parameters.Add(new Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
-                }
-                return new CellSet(_obj.ExecuteCellSet());
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<CellSet> f = delegate
-                {
-                    _objExcel.Parameters.Clear();
-                    foreach (AdomdParameter param in _parameters)
-                    {
-                        _objExcel.Parameters.Add(new ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
-                    }
-                    return new CellSet(_objExcel.ExecuteCellSet());
-                };
-                return f();
-            }
-        }
+        public Microsoft.AnalysisServices.AdomdClient.AdomdParameterCollection Parameters => _command.Parameters;
 
 
         public AdomdDataReader ExecuteReader()
         {
-            if (_obj != null)
-            {
-                _obj.Parameters.Clear();
-                foreach (AdomdParameter param in _parameters)
-                {
-                    _obj.Parameters.Add(new Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
-                }
-                return new AdomdDataReader(_obj.ExecuteReader( ));
-            }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<AdomdDataReader> f = delegate
-                {
-                    _objExcel.Parameters.Clear();
-                    foreach (AdomdParameter param in _parameters)
-                    {
-                        _objExcel.Parameters.Add(new ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
-                    }
-                    return new AdomdDataReader(_objExcel.ExecuteReader());
-                };
-                return f();
-            }
+
+            return new AdomdDataReader(_command.ExecuteReader( ));
         }
+
+        public Microsoft.AnalysisServices.AdomdClient.AdomdPropertyCollection Properties => _command.Properties;
 
 
         public int ExecuteNonQuery()
         {
-            if (_obj != null)
+
+            _command.Parameters.Clear();
+            foreach (AdomdParameter param in Parameters)
             {
-                _obj.Parameters.Clear();
-                foreach (AdomdParameter param in _parameters)
-                {
-                    _obj.Parameters.Add(new Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
-                }
-                return _obj.ExecuteNonQuery();
+                _command.Parameters.Add(new Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
             }
-            else
-            {
-                ExcelAdoMdConnections.ReturnDelegate<int> f = delegate
-                {
-                    _objExcel.Parameters.Clear();
-                    foreach (AdomdParameter param in _parameters)
-                    {
-                        _objExcel.Parameters.Add(new ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
-                    }
-                    return _objExcel.ExecuteNonQuery();
-                };
-                return f();
-            }
+            return _command.ExecuteNonQuery();
         }
 
         public void Execute()
         {
-            if (_obj != null)
+            _command.Parameters.Clear();
+            foreach (AdomdParameter param in Parameters)
             {
-                _obj.Parameters.Clear();
-                foreach (AdomdParameter param in _parameters)
-                {
-                    _obj.Parameters.Add(new Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
-                }
-                _obj.Execute();
+                _command.Parameters.Add(new Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
             }
-            else
-            {
-                ExcelAdoMdConnections.VoidDelegate f = delegate
-                {
-                    _objExcel.Parameters.Clear();
-                    foreach (AdomdParameter param in _parameters)
-                    {
-                        _objExcel.Parameters.Add(new ExcelAdomdClientReference::Microsoft.AnalysisServices.AdomdClient.AdomdParameter(param.Name, param.Value));
-                    }
-                    _objExcel.Execute();
-                };
-                f();
-            }
+            _command.Execute();
         }
 
-        internal object UnderlyingCommand
+        internal object InternalCommand
         {
             get
             {
-                if (_obj != null)
-                {
-                    return _obj;
-                }
-                else
-                {
-                    ExcelAdoMdConnections.ReturnDelegate<object> f = delegate
-                    {
-                        return _objExcel;
-                    };
-                    return f();
-                }
+                return _command;
             }
         }
+
+        #region IDisposable Support
+        private bool disposedValue; // To detect redundant calls
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    _command.Dispose();
+                    _command = null;
+                }
+
+                disposedValue = true;
+            }
+        }
+
+
+        // This code added to correctly implement the disposable pattern.
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        #endregion
     }
 
 }

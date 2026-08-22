@@ -34,12 +34,15 @@
         /// </summary>
         private void InitializeComponent()
         {
+            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(DaxStudioRibbon));
             this.tab1 = this.Factory.CreateRibbonTab();
             this.group1 = this.Factory.CreateRibbonGroup();
             this.btnDax = this.Factory.CreateRibbonButton();
+            this.btnTest1 = this.Factory.CreateRibbonButton();
             this.btnTest = this.Factory.CreateRibbonButton();
             this.tab1.SuspendLayout();
             this.group1.SuspendLayout();
+            this.SuspendLayout();
             // 
             // tab1
             // 
@@ -51,18 +54,32 @@
             // group1
             // 
             this.group1.Items.Add(this.btnDax);
+            this.group1.Items.Add(this.btnTest1);
             this.group1.Items.Add(this.btnTest);
             this.group1.Name = "group1";
             // 
             // btnDax
             // 
             this.btnDax.ControlSize = Microsoft.Office.Core.RibbonControlSize.RibbonControlSizeLarge;
-            this.btnDax.Image = global::DaxStudio.Properties.Resources.daxstudio_logo_32x32;
+            this.btnDax.Image = ((System.Drawing.Image)(resources.GetObject("btnDax.Image")));
             this.btnDax.Label = "DAX Studio";
             this.btnDax.Name = "btnDax";
             this.btnDax.ScreenTip = "Launch DAX Studio";
             this.btnDax.ShowImage = true;
             this.btnDax.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.BtnDaxClick);
+            // 
+            // btnTest1
+            // 
+            this.btnTest1.Label = "Test";
+            this.btnTest1.Name = "btnTest1";
+            this.btnTest1.ScreenTip = "Test Button";
+            this.btnTest1.Visible = false;
+            this.btnTest1.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnTest1_Click);
+            // 
+            // btnTest
+            // 
+            this.btnTest.Label = "";
+            this.btnTest.Name = "btnTest";
             // 
             // DaxStudioRibbon
             // 
@@ -75,6 +92,7 @@
             this.tab1.PerformLayout();
             this.group1.ResumeLayout(false);
             this.group1.PerformLayout();
+            this.ResumeLayout(false);
 
         }
 
@@ -84,6 +102,7 @@
         internal Microsoft.Office.Tools.Ribbon.RibbonGroup group1;
         internal Microsoft.Office.Tools.Ribbon.RibbonButton btnDax;
         internal Microsoft.Office.Tools.Ribbon.RibbonButton btnTest;
+        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnTest1;
     }
 
     partial class ThisRibbonCollection

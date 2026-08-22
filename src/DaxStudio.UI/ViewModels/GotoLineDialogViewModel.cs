@@ -1,4 +1,4 @@
-﻿using DAXEditor;
+﻿using DAXEditorControl;
 using System.Media;
 using Caliburn.Micro;
 using DaxStudio.UI.Extensions;
@@ -9,10 +9,10 @@ using System.Collections.Generic;
 
 namespace DaxStudio.UI.ViewModels
 {
-    public class GotoLineDialogViewModel : Screen, INotifyDataErrorInfo
+    public class GotoLineDialogViewModel : BaseDialogViewModel, INotifyDataErrorInfo
     {
-        private int _lineNo = 0;
-        private int _maxLines = 0;
+        private int _lineNo;
+        private int _maxLines;
         private readonly Dictionary<string, ICollection<string>>
             _validationErrors = new Dictionary<string, ICollection<string>>();
         private IEditor editor;
@@ -22,7 +22,7 @@ namespace DaxStudio.UI.ViewModels
         public GotoLineDialogViewModel(IEditor editor)
         {
             this.Editor = editor;
-
+            LineNo = 1;
         }
 
         #region Properties
@@ -53,18 +53,8 @@ namespace DaxStudio.UI.ViewModels
             }
         }
 
-        public bool IsValidLineNo
-        {
-            get { return LineNo <= MaxLines && LineNo >= 0; }
-        }
+        public bool IsValidLineNo => LineNo <= MaxLines && LineNo >= 0;
 
-        
-
-        //private void FocusOnFindBox()
-        //{
-        //    var v = (FindReplaceDialogView)this.GetView();
-        //    v.FocusOnFind();
-        //}
         public bool IsFocused { get { return true; } }
 
         #region INotifyDataErrorInfo members
@@ -98,7 +88,7 @@ namespace DaxStudio.UI.ViewModels
 
         #region Methods
 
-        public void GotoLine()
+        public async void GotoLine()
         {
             if (editor == null || LineNo == 0)
             {
@@ -110,14 +100,14 @@ namespace DaxStudio.UI.ViewModels
             else
             {
                 Editor.TextArea.Focus();
-                this.TryClose();
+                await this.TryCloseAsync();
             }
         }
 
         
-        public void Cancel()
+        public async override void Close()
         {
-            this.TryClose();
+            await this.TryCloseAsync();
         }
 
 

@@ -1,13 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Interactivity;
-using System.Windows.Media;
-using DaxStudio.UI.Utils;
+using Microsoft.Xaml.Behaviors;
 
 namespace DaxStudio.UI.Behaviours
 {
@@ -48,8 +41,14 @@ namespace DaxStudio.UI.Behaviours
         {
             if (HasFocus)
             {
-                //AssociatedObject.GotFocus += AssociatedObject_GotFocus;
-                AssociatedObject.Focus();
+                try
+                {
+                    AssociatedObject?.Focus();
+                }
+                catch 
+                { 
+                    // swallow any errors
+                }
 
             }
         }

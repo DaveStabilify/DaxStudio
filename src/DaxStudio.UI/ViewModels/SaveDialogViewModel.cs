@@ -1,27 +1,23 @@
 ﻿using Caliburn.Micro;
 using DaxStudio.Interfaces;
 using DaxStudio.UI.Enums;
-using System;
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel.Composition;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace DaxStudio.UI.ViewModels
 {
 
     [Export]
-    public class SaveDialogViewModel : Screen
+    public class SaveDialogViewModel : BaseDialogViewModel
     {
-        private SaveDialogResult _dialogResult = SaveDialogResult.Cancel;
+
         [ImportingConstructor]
         public SaveDialogViewModel() { }
 
         public ObservableCollection<ISaveable> Documents {get; set;}
 
-        public void Save() {
+        public async Task Save() {
             foreach (var doc in Documents)
             {
                 if (doc.ShouldSave)
@@ -29,20 +25,21 @@ namespace DaxStudio.UI.ViewModels
                 else
                     doc.IsDirty = false;
             }
-            _dialogResult = SaveDialogResult.Save;
-            TryClose(true);
+            Result = SaveDialogResult.Save;
+            await TryCloseAsync(true);
         }
-        public void DontSave() {
+        public async Task DontSave()
+        {
             foreach (var doc in Documents)
             {
                 doc.IsDirty = false;
             }
-            _dialogResult = SaveDialogResult.DontSave;
-            TryClose(true);
+            Result = SaveDialogResult.DontSave;
+            await TryCloseAsync (true);
         }
-        public void Cancel() {
-            _dialogResult = SaveDialogResult.Cancel;
-            //TryClose(false);
+        public override void Close() {
+            Result = SaveDialogResult.Cancel;
+            TryCloseAsync();
         }
 
         public void ToggleShouldSave(ISaveable item)
@@ -65,6 +62,6 @@ namespace DaxStudio.UI.ViewModels
                 NotifyOfPropertyChange(() => SelectAll);
             } }
 
-        public SaveDialogResult Result { get { return _dialogResult; } }
+        public SaveDialogResult Result { get; private set; } = SaveDialogResult.Cancel;
     }
 }

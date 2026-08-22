@@ -1,5 +1,6 @@
 ﻿using Caliburn.Micro;
 using DaxStudio.Interfaces;
+using DaxStudio.UI.Controls;
 using DaxStudio.UI.Enums;
 using DaxStudio.UI.Model;
 using System.Collections.ObjectModel;
@@ -9,7 +10,7 @@ namespace DaxStudio.UI.ViewModels
 {
 
     [Export]
-    public class AutoSaveRecoveryDialogViewModel : Screen
+    public class AutoSaveRecoveryDialogViewModel : BaseDialogViewModel
     {
         private OpenDialogResult _dialogResult = OpenDialogResult.Cancel;
         [ImportingConstructor]
@@ -17,7 +18,7 @@ namespace DaxStudio.UI.ViewModels
 
         public ObservableCollection<AutoSaveIndexEntry> Files {get; set;}
 
-        public void Open() {
+        public async void Open() {
 
             // TODO - implement open logic
 
@@ -29,7 +30,7 @@ namespace DaxStudio.UI.ViewModels
             //        doc.IsDirty = false;
             //}
             _dialogResult = OpenDialogResult.Open;
-            TryClose(true);
+            await TryCloseAsync(true);
         }
         
         public void Cancel() {
@@ -57,6 +58,6 @@ namespace DaxStudio.UI.ViewModels
                 NotifyOfPropertyChange(() => SelectAll);
             } }
 
-        public OpenDialogResult Result { get { return _dialogResult; } }
+        public OpenDialogResult Result => _dialogResult;
     }
 }

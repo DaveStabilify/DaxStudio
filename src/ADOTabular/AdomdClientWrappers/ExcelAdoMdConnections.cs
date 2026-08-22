@@ -1,4 +1,7 @@
+using Newtonsoft.Json;
 using System;
+using System.Buffers;
+using System.CodeDom;
 using System.ComponentModel;
 using System.IO;
 using System.Reflection;
@@ -9,20 +12,23 @@ namespace ADOTabular.AdomdClientWrappers
 {
     //Microsoft.Excel.AdomdClient.dll path logic from Microsoft.ReportingServices.AdHoc.Excel.Client.ExcelAdoMdConnections
     //Microsoft.Excel.AdomdClient.dll assembly loading improved over that approach
-    public class ExcelAdoMdConnections
+    public static class ExcelAdoMdConnections
     {
         internal delegate void VoidDelegate();
-        internal delegate T ReturnDelegate<T>();
+        internal delegate T ReturnDelegate<out T>();
 
-        private static Assembly m_excelAdomdClientAssembly;
-        private static string m_excelAdomdClientAssemblyPath;
+        private static Assembly _excelAdomdClientAssembly;
+        private static string _excelAdomdClientAssemblyPath;
 
         [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-        private static extern uint GetModuleFileName([In] IntPtr hModule, [Out] StringBuilder lpFilename, [In, MarshalAs(UnmanagedType.U4)] int nSize);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        private static extern uint GetModuleFileName([In] IntPtr hModule, [Out] char[] lpFilename, [In, MarshalAs(UnmanagedType.U4)] int nSize);
+
         [DllImport("Kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         private static extern IntPtr GetModuleHandle(string lpModuleName);
 
-        protected static string RetrieveAdomdClientAssemblyPath()
+        private static string RetrieveAdomdClientAssemblyPath()
         {
             string directoryName = RetrieveAdomdAssemblyFolder();
             return Path.Combine(directoryName, "Microsoft.Excel.AdomdClient.dll");
@@ -34,9 +40,18 @@ namespace ADOTabular.AdomdClientWrappers
             {
                 return RetrieveAdomdAssemblyFolderInternal("msolap110_xl.dll");
             }
+#pragma warning disable CA1031 // Do not catch general exception types
             catch
+#pragma warning restore CA1031 // Do not catch general exception types
             {
-                return RetrieveAdomdAssemblyFolderInternal("msmdlocal_xl.dll");
+                try
+                {
+                    return RetrieveAdomdAssemblyFolderInternal("msolap_xl.dll");
+                }
+                catch
+                {
+                    return RetrieveAdomdAssemblyFolderInternal("msmdlocal_xl.dll");
+                }
             }
         }
 
@@ -49,12 +64,27 @@ namespace ADOTabular.AdomdClientWrappers
                 int error = Marshal.GetLastWin32Error();
                 throw new Win32Exception(error);
             }
-            StringBuilder lpFilename = new StringBuilder(0x400);
-            if (GetModuleFileName(moduleHandle, lpFilename, lpFilename.Capacity) == 0)
+
+            int lpFilenameLen = 2048;
+            //StringBuilder lpFilename = new StringBuilder(lpFilenameLen);
+            string lpFilename = string.Empty;
+            char[] buffer = ArrayPool<char>.Shared.Rent(lpFilenameLen);
+            try
             {
-                int num3 = Marshal.GetLastWin32Error();
-                throw new Win32Exception(num3);
+                int len = buffer.Length;
+                var result = GetModuleFileName(moduleHandle, buffer, lpFilenameLen);
+                if (result == 0)
+                {
+                    int num3 = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(num3);
+                }
+                lpFilename = new string(buffer, 0, (int)result);
             }
+            finally
+            {
+                ArrayPool<char>.Shared.Return(buffer);
+            }
+                                    
             string directoryName = Path.GetDirectoryName(lpFilename.ToString());
             return directoryName;
         }
@@ -63,25 +93,15 @@ namespace ADOTabular.AdomdClientWrappers
         {
             get
             {
-                if (m_excelAdomdClientAssembly == null)
+                if (_excelAdomdClientAssembly == null)
                 {
-                    m_excelAdomdClientAssembly = Assembly.LoadFrom(ExcelAdomdClientAssemblyPath);
+                    _excelAdomdClientAssembly = Assembly.LoadFrom(ExcelAdomdClientAssemblyPath);
                 }
-                return m_excelAdomdClientAssembly;
+                return _excelAdomdClientAssembly;
             }
         }
 
-        protected static string ExcelAdomdClientAssemblyPath
-        {
-            get
-            {
-                if (m_excelAdomdClientAssemblyPath == null)
-                {
-                    m_excelAdomdClientAssemblyPath = RetrieveAdomdClientAssemblyPath();
-                }
-                return m_excelAdomdClientAssemblyPath;
-            }
-        }
-
+        private static string ExcelAdomdClientAssemblyPath =>
+            _excelAdomdClientAssemblyPath ??= RetrieveAdomdClientAssemblyPath();
     }
 }

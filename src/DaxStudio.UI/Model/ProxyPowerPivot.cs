@@ -1,18 +1,20 @@
-﻿using DaxStudio.Interfaces;
+using DaxStudio.Interfaces;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text;
 using System.Threading.Tasks;
-using System.Data;
 using Caliburn.Micro;
 using Newtonsoft.Json;
-using System.Net.Http.Formatting;
+using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
 using Serilog;
-using System.IO;
+using System.Diagnostics.Contracts;
+using DaxStudio.UI.Extensions;
+using ADOTabular.Enums;
+using DaxStudio.UI.Interfaces;
+using System.Threading;
+using DaxStudio.Core.Extensions;
 
 namespace DaxStudio.UI.Model
 {
@@ -20,16 +22,17 @@ namespace DaxStudio.UI.Model
         : IDaxStudioProxy
         , IHandle<ActivateDocumentEvent>
     {
-        private readonly int _port;
-        private readonly Uri _baseUri;
-        private IEventAggregator _eventAggregator;
+        private int _port;
+        private Uri _baseUri;
+        private readonly IEventAggregator _eventAggregator;
         private ViewModels.DocumentViewModel _activeDocument;
         public ProxyPowerPivot(IEventAggregator eventAggregator, int port)
         {
+            Contract.Requires(eventAggregator != null, "The eventAggregator argument must not be null");
             _port = port;
-            _baseUri = new Uri(string.Format("http://localhost:{0}/",port));
+            _baseUri = new Uri($"http://localhost:{port}/");
             _eventAggregator = eventAggregator;
-            _eventAggregator.Subscribe(this);
+            _eventAggregator.SubscribeOnUIThread(this);
         }
 
         internal HttpClient GetHttpClient()
@@ -37,81 +40,86 @@ namespace DaxStudio.UI.Model
             var client = new HttpClient();
             client.BaseAddress = _baseUri;
             client.DefaultRequestHeaders.Accept.Clear();
-            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            client.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
             return client;
         }
 
         public bool IsExcel
         {
-            get { return true; }
+            get { return _port > 0; }
         }
 
-        public bool SupportsQueryTable
-        {
-            get { throw new NotImplementedException(); }
-        }
 
-        public bool SupportsStaticTable
+        public bool HasPowerPivotModel(int TimeoutSecs)
         {
-            get { return true; }
-        }
+            if (!IsExcel) { return false; }
 
-        public bool HasPowerPivotModel
-        {
-            get {
-                Log.Verbose("{class} {method} {event}", "Model.ProxyPowerPivot", "HasPowerPivotModel:Get", "Start");
-                var doc = _activeDocument;
-                using (var client = GetHttpClient())
+            Log.Verbose("{class} {method} {event}", "Model.ProxyPowerPivot", "HasPowerPivotModel:Get", "Start");
+            var hasModel = false;
+            var doc = _activeDocument;
+            using (var client = GetHttpClient())
+            {
+                try
                 {
-                    try
+                        
+                    //HACK: see if this helps with the PowerPivot client spinning issue
+                    client.Timeout = new TimeSpan(0, 0, TimeoutSecs); // set 30 second timeout
+
+                    HttpResponseMessage response = client.GetAsync("workbook/hasdatamodel").Result;
+                    Log.Verbose("{class} {method} {event}", "Model.ProxyPowerPivot", "HasPowerPivotModel:Get", "Got Response");
+                    if (response.IsSuccessStatusCode)
                     {
-                        //HACK: see if this helps with the PowerPivot client spinning issue
-                        client.Timeout = new TimeSpan(0,0, 30); // set 30 second timeout
-
-                        HttpResponseMessage response = client.GetAsync("workbook/hasdatamodel").Result;
-                        Log.Verbose("{class} {method} {event}", "Model.ProxyPowerPivot", "HasPowerPivotModel:Get", "Got Response");
-                        if (response.IsSuccessStatusCode)
-                        {
-                            Log.Verbose("{class} {method} {event}", "Model.ProxyPowerPivot", "HasPowerPivotModel:Get", "Reading Result");
-                            return response.Content.ReadAsAsync<bool>().Result;
-                        }
+                        Log.Verbose("{class} {method} {event}", "Model.ProxyPowerPivot", "HasPowerPivotModel:Get", "Reading Result");
+                        hasModel = JsonConvert.DeserializeObject<bool>(response.Content.ReadAsStringAsync().Result);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        //_eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, string.Format("Error checking if active Excel workbook has a PowerPivot ({0})",ex.Message)));
-                        Log.Error("{class} {method} {exception} {stacktrace}", "Model.ProxyPowerPivot", "HasPowerPivotModel:Get", ex.Message, ex.StackTrace );
-                        doc.OutputError(string.Format("Error checking if active Excel workbook has a PowerPivot ({0})", ex.Message));
+                        var msg = response.Content.ReadAsStringAsync().Result;
+                        Log.Error("{class} {method} {message}", "ProxyPowerPivot", "WorkbookName", $"Error checking if Workbook has a PowerPivot model\n {msg}");
+                        doc?.OutputError($"Error checking if the active Workbook in Excel has a PowerPivot model\n({msg})");
                     }
-
-
-                    return false;
+                        
                 }
+                catch (Exception ex)
+                {
+                    var innerEx = ex.GetLeafException();
+                    Log.Error("{class} {method} {exception} {stacktrace}", "Model.ProxyPowerPivot", "HasPowerPivotModel:Get", ex.Message, ex.StackTrace );
+                    doc?.OutputError($"Error checking if active Excel workbook has a PowerPivot model ({innerEx.Message})");
+                }
+
+
+                return hasModel;
             }
+            
         }
 
-        public void EnsurePowerPivotDataIsLoaded()
-        {
-            throw new NotImplementedException();
-        }
 
         public string WorkbookName
         {
             get
             {
+                if (!IsExcel) { return string.Empty; }
+
                 var doc = _activeDocument;
                 using (var client = GetHttpClient())
                 {
                     try { 
-                    HttpResponseMessage response = client.GetAsync("workbook/filename").Result;
-                    if (response.IsSuccessStatusCode)
-                    {
-                        return response.Content.ReadAsAsync<string>().Result;
-                    }
+                        HttpResponseMessage response = client.GetAsync("workbook/filename").Result;
+                        if (response.IsSuccessStatusCode)
+                        {
+                            var workbookName = JsonConvert.DeserializeObject<string>( response.Content.ReadAsStringAsync().Result);
+                            return workbookName;
+                        } 
+                        else
+                        {
+                            var msg = $"{response.Content.ReadAsStringAsync().Result} ({response.StatusCode})";
+                            Log.Error("{class} {method} {message}", "ProxyPowerPivot", "WorkbookName", $"Error getting WorkbookName:\n{msg}");
+                        }
                     }
                     catch (Exception ex)
                     {
-                        //_eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, string.Format("Error getting ActiveWorkbook from Excel",ex.Message)));
-                        doc.OutputError(string.Format("Error getting ActiveWorkbook from Excel", ex.Message));
+                        Log.Error(ex, "{class} {method} {message}", nameof(ProxyPowerPivot), nameof(WorkbookName), ex.Message);
+                        doc?.OutputError(string.Format("Error getting ActiveWorkbook from Excel: {0} ", ex.Message));
                     }
 
                     return "<Workbook not found>";
@@ -124,6 +132,8 @@ namespace DaxStudio.UI.Model
         {
             get
             {
+                if(!IsExcel) { return Enumerable.Empty<string>(); }
+
                 var doc = _activeDocument;
                 try
                 {
@@ -132,15 +142,16 @@ namespace DaxStudio.UI.Model
                         HttpResponseMessage response = client.GetAsync("workbook/worksheets").Result;
                         if (response.IsSuccessStatusCode)
                         {
-                            return response.Content.ReadAsAsync<string[]>().Result;
+                            return JsonConvert.DeserializeObject<string[]>(response.Content.ReadAsStringAsync().Result);
+                            //return response.Content.ReadAsAsync<string[]>().Result;
                         }
                         
                     }
                 }
                 catch (Exception ex)
                 {
-                    //_eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, string.Format("Error getting Worksheet list from Excel ({0})",ex.Message)));
-                    doc.OutputError(string.Format("Error getting Worksheet list from Excel ({0})", ex.Message));
+                    //_eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, string.Format("Error getting Worksheet list from Excel ({0})",ex.Message)));
+                    doc?.OutputError(string.Format("Error getting Worksheet list from Excel ({0})", ex.Message));
                 }
                 
                 return new string[] { };
@@ -153,25 +164,23 @@ namespace DaxStudio.UI.Model
             var doc = _activeDocument;
             using (var client = GetHttpClient())
             {
+                
                 try { 
-                await client.PostAsJsonAsync<IStaticQueryResult>( "workbook/staticqueryresult", new StaticQueryResult(sheetName,results) as IStaticQueryResult);
-                /*await client.PostAsync<IStaticQueryResult>("workbook/staticqueryresult", new StaticQueryResult(sheetName, results), new JsonMediaTypeFormatter
-                        {
-                            SerializerSettings = new JsonSerializerSettings
-                            {
-                                Converters = new List<JsonConverter>
-                                    {
-                                        //list of your converters
-                                        new JsonDataTableConverter()
-                                    }
-                            }
-                        });
-                 */ 
+
+                    var response = await client.PostStreamAsync("workbook/staticqueryresult", new StaticQueryResult(sheetName, results) as IStaticQueryResult).ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        var msg = await response.Content.ReadAsStringAsync();
+                        doc?.OutputError(string.Format("Error sending results to Excel: ({0})", msg));
+
+                    }
+
+
                 }
                 catch (Exception ex)
                 {
-                    //_eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, string.Format("Error sending results to Excel ({0})",ex.Message)));
-                    doc.OutputError(string.Format("Error sending results to Excel ({0})", ex.Message));
+                    Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(ProxyPowerPivot), nameof(OutputStaticResultAsync), "Error outputting static results");
+                    doc?.OutputError(string.Format("Error sending results to Excel ({0})", ex.Message));
                 }
 
             }
@@ -184,19 +193,19 @@ namespace DaxStudio.UI.Model
             {
                 try
                 {
-                    var resp = await client.PostAsJsonAsync<ILinkedQueryResult>("workbook/linkedqueryresult", new LinkedQueryResult(daxQuery,sheetName,connectionString) as ILinkedQueryResult);
+                    var resp = await client.PostStreamAsync("workbook/linkedqueryresult", new LinkedQueryResult(daxQuery, sheetName, connectionString) as ILinkedQueryResult).ConfigureAwait(false);
                     if (resp.StatusCode != System.Net.HttpStatusCode.OK)
                     {
-                        var str = await resp.Content.ReadAsStringAsync();
+                        var str = JsonConvert.DeserializeObject<string>(resp.Content.ReadAsStringAsync().Result);
                         var msg = (string)Newtonsoft.Json.Linq.JObject.Parse(str)["Message"];
                         
-                        doc.OutputError(string.Format("Error sending results to Excel ({0})", msg));
+                        doc?.OutputError(string.Format("Error sending results to Excel ({0})", msg));
                     }
                 }
                 catch (Exception ex)
                 {
-                    //_eventAggregator.PublishOnUIThread(new OutputMessage(MessageType.Error, string.Format("Error sending results to Excel ({0})",ex.Message)));
-                    doc.OutputError(string.Format("Error sending results to Excel ({0})", ex.Message));
+                    Log.Error(ex, Common.Constants.LogMessageTemplate, nameof(ProxyPowerPivot), nameof(OutputLinkedResultAsync), "Error outputting linked results");
+                    doc?.OutputError(string.Format("Error sending results to Excel ({0})", ex.Message));
                 }
 
             }
@@ -205,18 +214,24 @@ namespace DaxStudio.UI.Model
         public ADOTabular.ADOTabularConnection GetPowerPivotConnection(string applicationName, string additionalproperties)
         {
             var connstr = string.Format("Data Source=http://localhost:{0}/xmla;{1};{2}", _port,applicationName,additionalproperties);
-            return new ADOTabular.ADOTabularConnection(connstr, ADOTabular.AdomdClientWrappers.AdomdType.AnalysisServices);
+            return new ADOTabular.ADOTabularConnection(connstr, AdomdType.AnalysisServices);
         }
 
-        public int Port { get { return _port; } }
+        public int Port { get { return _port; }  
+            set { 
+                _port = value;
+                _baseUri = new Uri($"http://localhost:{_port}/");
+            } 
+        }
         public void Dispose()
         {
-            throw new NotImplementedException();
+            // Do Nothing
         }
 
-        public void Handle(ActivateDocumentEvent message)
+        public Task HandleAsync(ActivateDocumentEvent message, CancellationToken cancellationToken)
         {
             _activeDocument = message.Document;
+            return Task.CompletedTask;
         }
     }
 }

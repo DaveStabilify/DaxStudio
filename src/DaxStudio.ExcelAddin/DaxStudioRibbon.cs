@@ -5,6 +5,9 @@ using System.Runtime.InteropServices;
 using Serilog;
 using System.Windows;
 using DaxStudio.Common;
+using System.IO;
+using System.Reflection;
+using System.Data.OleDb;
 
 namespace DaxStudio.ExcelAddin
 {
@@ -14,13 +17,18 @@ namespace DaxStudio.ExcelAddin
         private Process _client;
         private int _port;
 
-        [DllImport("user32.dll")]
-        static extern bool SetForegroundWindow(IntPtr hWnd);
 
         private void Ribbon1Load(object sender, RibbonUIEventArgs e)
         {
-            Log.Debug("{class} {method} {message}", "DaxStudioRibbon", "RibbonLoad", "Start");
-            try {
+            try
+            {
+                Log.Debug("{class} {method} {message}", "DaxStudioRibbon", "RibbonLoad", "Start");
+
+#if DEBUG
+                // only show the "Test" button when running in debug mode
+                btnTest1.Visible = true;
+#endif
+
                 // look for a running DaxStudio.exe instance and 
                 // if we find one try to start a WebHost for it
                 var client = DaxStudioStandalone.GetClient();
@@ -37,7 +45,10 @@ namespace DaxStudio.ExcelAddin
             {
                 Log.Error("{Class} {method} {exception} {stacktrace}", "DaxStudioRibbon", "RibbonLoad", ex.Message, ex.StackTrace);
             }
-            Log.Debug("{class} {method} {message}", "DaxStudioRibbon", "RibbonLoad", "Finish");
+            finally
+            {
+                Log.Debug("{class} {method} {message}", "DaxStudioRibbon", "RibbonLoad", "Finish");
+            }
         }
         
         public bool DebugLoggingEnabled { get; set; }
@@ -45,7 +56,7 @@ namespace DaxStudio.ExcelAddin
         private void BtnDaxClick(object sender, RibbonControlEventArgs e)
         {
             try {
-                var xl = new ExcelHelper(Globals.ThisAddIn.Application);
+                //var xl = new ExcelHelper(Globals.ThisAddIn.Application);
                 //if (!xl.HasPowerPivotData())
                 //{
                 //    MessageBox.Show("The Active Workbook must have a PowerPivot in order to launch DAX Studio");
@@ -73,35 +84,64 @@ namespace DaxStudio.ExcelAddin
             }
         }
 
+        public void BtnTextClick(object sender, RibbonControlEventArgs e)
+        {
+
+        }
+
         public void Launch(bool enableLogging)
         {
             Log.Debug("{class} {method} {message}", "DaxStudioRibbon", "Launch", "Entering Launch()");
             // Find free port and start the web host
             _port = WebHost.Start();
-            
-            
-            //todo - can I search for DaxStudio.exe and set _client if found (would need to send it a message with the port number) ??
 
+
+            //todo - can I search for DaxStudio.exe and set _client if found (would need to send it a message with the port number) ??
+            Log.Debug("{class} {method} {message}", "DaxStudioRibbon", "Launch", "Checking for an existing instance of DaxStudio.exe");
             // activate DAX Studio if it's already running
             if (_client != null)
             {
                 if (!_client.HasExited)
                 {
-                    SetForegroundWindow(_client.MainWindowHandle);
+                    NativeMethods.SetForegroundWindow(_client.MainWindowHandle);
                     return;
                 }
             }
 
+            // find a daxstudio.exe process
+            // send a wm_copydata message
+            Process[] processes = Process.GetProcessesByName("daxstudio");
+            if (processes.Length > 0)
+            {
+                WMHelper.SendCopyDataMessage(processes[0].MainWindowHandle, new string[] {$"-port",_port.ToString()});
+                NativeMethods.SetForegroundWindow(processes[0].MainWindowHandle);
+                return;
+            }
+
+
             var path = "";
             // look for daxstudio.exe in the same folder as daxstudio.dll
-            path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "daxstudio.exe");
+            path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "daxstudio.exe");
+            if (!File.Exists(path))
+            {
+                // try getting daxstudio.exe from the parent directory
+                path = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "daxstudio.exe"));
+                if (!File.Exists(path)) throw new FileNotFoundException($"Excel Addin is unable to launch the DAX Studio User Interface\nBaseDirectory: {AppDomain.CurrentDomain.BaseDirectory}");
+            }
+
 
             Log.Debug("{class} {method} About to launch DaxStudio on path: {path} port: {port}", "DaxStudioRibbon", "BtnDaxClick", path, _port);
-            // start Dax Studio process
-            ProcessStartInfo psi = new ProcessStartInfo(path);
-            psi.Arguments = string.Format("-port {0}", _port);
+            // start DAX Studio process
+            ProcessStartInfo psi = new ProcessStartInfo(path)
+            {
+                Arguments = $"-port {_port}",
+                UseShellExecute = false // this is false as we are executing a .exe file directly
+            };
             if (enableLogging) psi.Arguments += " -log";
             _client = Process.Start(psi);
+
+            
+
             if (!_client.WaitForInputIdle(Constants.ExcelUIStartupTimeout))
             {
                 Log.Error("Launching User Interface from Excel exceeded the {timeout} ms timeout", Constants.ExcelUIStartupTimeout);
@@ -144,6 +184,53 @@ namespace DaxStudio.ExcelAddin
 
         }
 
+        private void btnTest1_Click(object sender, RibbonControlEventArgs e)
+        {
+            //const string MSOLAP_PROVIDER = "MSOLAP";
+            //const string DATASOURCE = "$Embedded$";
+            //string connStr = string.Empty;
 
+            //var loc = "C:\\temp\\PPvtFromFolder2.xlsx";
+
+            //var connStrBase = $"Persist Security Info=True;MDX Compatibility=1;Safety Options=2;MDX Missing Member Mode=Error;Subqueries=0;Optimize Response=7;";
+            //connStrBase = "Persist Security Info=True;Integrated Security=SSPI;MDX Compatibility=1;Safety Options=2;;Initial Catalog=Microsoft_SQLServer_AnalysisServices";
+            //var builder = new OleDbConnectionStringBuilder(connStrBase);
+            //builder.Provider = MSOLAP_PROVIDER;
+            //builder.DataSource = DATASOURCE;
+            //builder.Add("location", loc);
+            //builder.Add("server", loc);
+            //connStr = builder.ToString();
+
+            //Log.Debug("{class} {method} {message}", "XmlaController", "PostRawBufferManual", "About to Load AmoWrapper");
+            //AmoWrapper.AmoType amoType = AmoWrapper.AmoType.Excel;
+            //using (var svr = new AmoWrapper.AmoServer(amoType))
+            //{
+            //    try
+            //    {
+            //        svr.Connect(connStr);
+            //    }
+            //    catch (Exception ex)
+            //    {
+            //        var innerEx = ex;
+            //        while (innerEx != null)
+            //        {
+            //            Debug.WriteLine(innerEx.Message);
+            //            innerEx = innerEx.InnerException;
+            //        }
+            //    }
+            //    MessageBox.Show($"{svr.TableCount} tables found");
+            //}
+
+            Log.Debug("{class} {method} {message}", "DaxStudioRibbon", "Launch", "Entering Launch()");
+            // Find free port and start the web host
+            _port = WebHost.Start();
+
+            MessageBox.Show("Test Clicked");
+            var addin = Globals.ThisAddIn;
+            var app = addin.Application;
+            var wb = app.ActiveWorkbook;
+            wb.FollowHyperlink($"https://localhost:3000/launch?port={_port}");
+        }
     }
+
 }

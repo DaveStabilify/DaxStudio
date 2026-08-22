@@ -1,4 +1,5 @@
-﻿using System.Reflection;
+﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -8,9 +9,9 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyTitle("DaxStudio.Tests")]
 [assembly: AssemblyDescription("")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("Telstra Corporation")]
+[assembly: AssemblyCompany("DAX Studio")]
 [assembly: AssemblyProduct("DaxStudio.Tests")]
-[assembly: AssemblyCopyright("Copyright © Telstra Corporation 2013")]
+[assembly: AssemblyCopyright("Copyright © DAX Studio 2024")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 

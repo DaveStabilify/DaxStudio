@@ -1,18 +1,15 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using ADOTabular.Enums;
 
 namespace DaxStudio.Interfaces
 {
     public interface IConnection
     {
-        int Spid { get; }
+        int SPID { get; }
         bool IsAdminConnection { get; }
         bool IsPowerPivot { get; }
         bool IsConnected { get;  }
-        string SelectedDatabase { get; }
+        string DatabaseName { get; }
         string ServerName { get; }
+        ServerType ServerType { get; }
     }
 }

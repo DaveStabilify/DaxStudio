@@ -3,8 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using DaxStudio.Interfaces;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-
+using NSubstitute;
 
 namespace DaxStudio.Tests
 {
@@ -16,33 +17,40 @@ namespace DaxStudio.Tests
         {
             Caliburn.Micro.IEventAggregator stubEventAgg = new Caliburn.Micro.EventAggregator();
             var stubVerChk = new VersionCheckMock();
-            var stubHost = new Mocks.MockDaxStudioHost();
-            var hlp = new DaxStudio.UI.ViewModels.HelpAboutViewModel(stubEventAgg,stubVerChk, stubHost );
-            var ra = hlp.ReferencedAssemblies;
-            Assert.IsTrue(ra.Count >= 32);
+            using (var stubHost = new Mocks.MockDaxStudioHost())
+            {
+                var mockOptions = Substitute.For<IGlobalOptions>();
+                var hlp = new DaxStudio.UI.ViewModels.HelpAboutViewModel(stubEventAgg, stubVerChk, stubHost, mockOptions);
+                var ra = hlp.ReferencedAssemblies;
+                Assert.IsGreaterThanOrEqualTo(32, ra.Count);
+            }
         }
         [TestMethod]
         public void GetAssemblyList()
         {
             Caliburn.Micro.IEventAggregator stubEventAgg = new Caliburn.Micro.EventAggregator();
             var stubVerChk = new VersionCheckMock();
-            var stubHost = new Mocks.MockDaxStudioHost();
-            var hlp = new DaxStudio.UI.ViewModels.HelpAboutViewModel(stubEventAgg,stubVerChk, stubHost);
-            var ra = hlp.ReferencedAssemblies;
-            foreach (var a in ra)
+            using (var stubHost = new Mocks.MockDaxStudioHost())
             {
-                System.Diagnostics.Debug.WriteLine(a.Key);
-            }
+                var mockOptions = Substitute.For<IGlobalOptions>();
+                var hlp = new DaxStudio.UI.ViewModels.HelpAboutViewModel(stubEventAgg, stubVerChk, stubHost, mockOptions);
+                var ra = hlp.ReferencedAssemblies;
+                foreach (var a in ra)
+                {
+                    System.Diagnostics.Debug.WriteLine(a.Key);
+                }
 
-            Assert.IsTrue( ra["DaxStudio.Interfaces"].Length > 0);
+                Assert.IsGreaterThan(0, ra["DaxStudio.Interfaces"].Length);
+            }
         }
     }
 
     public class VersionCheckMock: DaxStudio.Interfaces.IVersionCheck
     {
+        
         public void CheckVersion()
         {
-            throw new NotImplementedException();
+            // do Nothing
         }
 
         public Version DismissedVersion
@@ -84,12 +92,17 @@ namespace DaxStudio.Tests
             get { throw new NotImplementedException(); }
         }
 
+        public bool IsServerVersionPreview
+        {
+            get { throw new NotImplementedException(); }
+        }
+
         public string VersionStatus
         {
             get { throw new NotImplementedException(); }
         }
 
-        public string DownloadUrl
+        public Uri DownloadUrl
         {
             get
             {
@@ -101,9 +114,16 @@ namespace DaxStudio.Tests
         {
             throw new NotImplementedException();
         }
+
+        public void ForceRecheck()
+        {
+            throw new NotImplementedException();
+        }
 #pragma warning disable 0067
         // required for implementing the interface, but not used for these tests
         public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+        public event EventHandler UpdateCompleteCallback;
+        public event EventHandler UpdateStartingCallback;
 #pragma warning restore 0067
     }
 }

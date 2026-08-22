@@ -1,31 +1,35 @@
-﻿using System.ComponentModel.Composition;
-using System.Data;
-using DaxStudio.UI.Model;
-using DaxStudio.UI.Extensions;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows;
-using System.Windows.Input;
-using DaxStudio.Interfaces;
 using Caliburn.Micro;
+using DaxStudio.Common;
+using DaxStudio.Interfaces;
+using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
-using System.Collections.Generic;
 using DaxStudio.UI.Interfaces;
-using System.Drawing;
-using System.Linq;
-using System;
-using DaxStudio.UI.Views;
-using UnitComboLib.ViewModel;
-using System.Collections.ObjectModel;
-using UnitComboLib.Unit.Screen;
+using DaxStudio.UI.Model;
 using DaxStudio.UI.Utils;
+using ICSharpCode.AvalonEdit.Document;
+using Serilog;
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel.Composition;
+using System.Data;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+//using System.Windows.Forms;
+using System.Windows.Input;
+using UnitComboLib.Unit.Screen;
+using UnitComboLib.ViewModel;
+using DaxStudio.Core.Interfaces;
 
 namespace DaxStudio.UI.ViewModels
 {
     [PartCreationPolicy(CreationPolicy.NonShared)]
     [Export]
     [Export(typeof(IToolWindow))]
-    public class QueryResultsPaneViewModel: ToolWindowBase
+    public class QueryResultsPaneViewModel : ToolWindowBase
         , IHandle<QueryResultsPaneMessageEvent>
         , IHandle<ActivateDocumentEvent>
         , IHandle<NewDocumentEvent>
@@ -34,6 +38,7 @@ namespace DaxStudio.UI.ViewModels
         , IHandle<QueryFinishedEvent>
         , IHandle<UpdateGlobalOptions>
         , IHandle<SizeUnitsUpdatedEvent>
+        , IHandle<CopyWithHeadersEvent>
     {
         private DataTable _resultsTable;
         private string _selectedWorksheet;
@@ -49,49 +54,50 @@ namespace DaxStudio.UI.ViewModels
             _host = host;
             _options = options;
             var items = new ObservableCollection<ListItem>(ScreenUnitsHelper.GenerateScreenUnitList());
-            SizeUnits = new UnitViewModel(items, new ScreenConverter(_options.ResultFontSize), 0);
+            SizeUnits = new UnitViewModel(items, new ScreenConverter(_options.ResultFontSizePx), 0);
             //UpdateSettings();
         }
 
         public QueryResultsPaneViewModel(DataTable resultsTable)
         {
             _resultsTable = resultsTable;
-            
+
         }
 
-        public override string Title
-        {
-            get { return "Results"; }
-        }
+        public override string Title => "Results";
+        public override string DefaultDockingPane => "DockBottom";
+        public override string ContentId => "results";
 
-        public DataTable ResultsDataTable
-        {
-            get { return _resultsTable; }
-            set { _resultsTable = value;
-            ShowResultsTable = true;
-            NotifyOfPropertyChange(()=> ResultsDataView);}
-        }
 
         public DataSet ResultsDataSet
         {
             get { return _resultsDataSet; }
-            set { _resultsDataSet = value;
+            set
+            {
+                _resultsDataSet?.Dispose();
+                _resultsDataSet = value;
                 ShowResultsTable = true;
                 NotifyOfPropertyChange(() => Tables);
+                ShowResultsTable = _resultsDataSet.Tables.Count > 0;
                 SelectedTableIndex = 0;
                 NotifyOfPropertyChange(() => SelectedTableIndex);
             }
         }
         private int _selectedTabIndex = -1;
-        public int SelectedTableIndex { get { return _selectedTabIndex; }
-            set { _selectedTabIndex = value;
-                if (_document != null && value >= 0 ) _document.RowCount = ResultsDataSet.Tables[value].Rows.Count;
+        public int SelectedTableIndex
+        {
+            get { return _selectedTabIndex; }
+            set
+            {
+                _selectedTabIndex = value;
+                if (_document != null && value >= 0 && ResultsDataSet != null && ResultsDataSet.Tables.Count > 0) _document.RowCount = ResultsDataSet.Tables[value].Rows.Count;
                 NotifyOfPropertyChange(() => SelectedTableIndex);
             }
         }
         public DataTableCollection Tables
         {
-            get {
+            get
+            {
                 if (_resultsDataSet == null) return null;
                 return _resultsDataSet.Tables;
             }
@@ -104,28 +110,13 @@ namespace DaxStudio.UI.ViewModels
         //}
 
         public DataView ResultsDataView
-        { get { return _resultsTable==null?new DataTable("blank").AsDataView():  _resultsTable.AsDataView(); } }
+        { get { return _resultsTable == null ? new DataTable("blank").AsDataView() : _resultsTable.AsDataView(); } }
 
         public void OnListViewItemPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
         {
             System.Diagnostics.Debug.WriteLine("in OnListViewItemPreviewMouseRightButtonDown");
         }
 
-        private void ResultsAutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
-        {
-            
-            if ((e.PropertyName.Contains(".")
-                || e.PropertyName.Contains("/")
-                || e.PropertyName.Contains("(")
-                || e.PropertyName.Contains(")")
-                || e.PropertyName.Contains("[")
-                || e.PropertyName.Contains("]")
-                ) && e.Column is DataGridBoundColumn)
-            {
-                DataGridBoundColumn dataGridBoundColumn = e.Column as DataGridBoundColumn;
-                dataGridBoundColumn.Binding = new Binding("[" + e.PropertyName + "]");
-            }
-        }
 
         private bool _showResultsTable;
         public bool ShowResultsTable
@@ -137,7 +128,7 @@ namespace DaxStudio.UI.ViewModels
             private set
             {
                 _showResultsTable = value;
-                _showResultsMessage = !value;
+                if (value) ResultsMessage = string.Empty;
                 NotifyOfPropertyChange(() => ShowResultsTable);
                 NotifyOfPropertyChange(() => ShowResultsMessage);
             }
@@ -150,25 +141,24 @@ namespace DaxStudio.UI.ViewModels
             set
             {
                 _resultsMessage = value;
-                ShowResultsTable = string.IsNullOrEmpty(_resultsMessage);
                 NotifyOfPropertyChange(() => ResultsMessage);
             }
         }
 
 
-
-        private bool _showResultsMessage;
+        //private bool _showResultsMessage;
         public bool ShowResultsMessage
         {
-            get { return _showResultsMessage; }
-            private set
-            {
-                _showResultsMessage = value;
-                NotifyOfPropertyChange(() => ShowResultsMessage);
-            }
+            get { return !ShowResultsTable && !ShowErrorMessage; }
+            //private set
+            //{
+            //    _showResultsMessage = value;
+            //    NotifyOfPropertyChange(() => ShowResultsMessage);
+            //    NotifyOfPropertyChange(() => ShowResultsTable);
+            //}
         }
-        private OutputTargets _icon;
-        public OutputTargets ResultsIcon
+        private OutputTarget _icon;
+        public OutputTarget ResultsIcon
         {
             get { return _icon; }
             set
@@ -179,16 +169,18 @@ namespace DaxStudio.UI.ViewModels
             }
         }
 
-        public double _fontSize = 20;
-        public double FontSize {
+        private double _fontSize = 20;
+        public double FontSize
+        {
             get { return _fontSize; }
-            set {
+            set
+            {
                 _fontSize = value;
                 NotifyOfPropertyChange(() => FontSize);
             }
         }
 
-        public string _fontFamily = "Arial";
+        private string _fontFamily = "Arial";
         public string FontFamily
         {
             get { return _fontFamily; }
@@ -199,10 +191,12 @@ namespace DaxStudio.UI.ViewModels
             }
         }
 
-        public void Handle(QueryResultsPaneMessageEvent message)
+        public Task HandleAsync(QueryResultsPaneMessageEvent message, CancellationToken cancellationToken)
         {
+            if (message.Target == null) return Task.CompletedTask;
             ResultsIcon = message.Target.Icon;
             ResultsMessage = message.Target.Message;
+            return Task.CompletedTask;
         }
 
         public IEnumerable<string> Worksheets
@@ -213,12 +207,14 @@ namespace DaxStudio.UI.ViewModels
         public string SelectedWorksheet
         {
             get { return _selectedWorksheet; }
-            set { _selectedWorksheet = value;
-            _eventAggregator.PublishOnBackgroundThread(new SetSelectedWorksheetEvent(_selectedWorksheet));
+            set
+            {
+                _selectedWorksheet = value;
+                _eventAggregator.PublishAsync(new SetSelectedWorksheetEvent(_selectedWorksheet));
             }
         }
         private DocumentViewModel _document;
-        public void Handle(ActivateDocumentEvent message)
+        public Task HandleAsync(ActivateDocumentEvent message, CancellationToken cancellationToken)
         {
             _document = message.Document;
             if (_host.IsExcel)
@@ -228,11 +224,12 @@ namespace DaxStudio.UI.ViewModels
                 SelectedWorksheet = message.Document.SelectedWorksheet;
                 NotifyOfPropertyChange(() => Worksheets);
             }
+            return Task.CompletedTask;
         }
 
-        public void Handle(NewDocumentEvent message)
+        public async Task HandleAsync(NewDocumentEvent message, CancellationToken cancellationToken)
         {
-            _eventAggregator.PublishOnUIThread(new QueryResultsPaneMessageEvent(message.Target));
+            await _eventAggregator.PublishAsync(new QueryResultsPaneMessageEvent(message.Target));
             if (message.Target is IActivateResults) { this.Activate(); }
             //ResultsIcon = message.Target.Icon;
             //ResultsMessage = message.Target.Message;
@@ -243,53 +240,122 @@ namespace DaxStudio.UI.ViewModels
             get
             {
                 // Only show the worksheets option if the output is one of the Excel Targets
-                return ResultsIcon == OutputTargets.Linked || ResultsIcon == OutputTargets.Static;
+                return _host.IsExcel && (ResultsIcon == OutputTarget.Linked || ResultsIcon == OutputTarget.Static);
             }
         }
 
-        private bool _isBusy = false;
+        private bool _isBusy;
         public bool IsBusy
         {
             get { return _isBusy; }
-            set { _isBusy = value;
-            NotifyOfPropertyChange(() => IsBusy);
+            set
+            {
+                _isBusy = value;
+                NotifyOfPropertyChange(() => IsBusy);
             }
         }
 
-        public void Handle(QueryStartedEvent message)
+        public Task HandleAsync(QueryStartedEvent message, CancellationToken cancellation)
         {
+            // if we are not outputting to the grid it should be cleared
+            if (!ShowResultsTable) Clear();
             IsBusy = true;
+            return Task.CompletedTask;
         }
 
-        public void Handle(CancelQueryEvent message)
+        public Task HandleAsync(CancelQueryEvent message, CancellationToken cancellationToken)
         {
             IsBusy = false;
             // clear out any data if the query is cancelled
-            ResultsDataTable = new DataTable("Empty");
+            ResultsDataSet?.Dispose();
+            ResultsDataSet = new DataSet("Empty");
+            return Task.CompletedTask;
         }
 
-        public void Handle(QueryFinishedEvent message)
+        public Task HandleAsync(QueryFinishedEvent message, CancellationToken cancellationToken)
         {
             IsBusy = false;
+            return Task.CompletedTask;
         }
         private string _selectedWorkbook = "";
         private DataSet _resultsDataSet;
 
-        public string SelectedWorkbook { 
-            get { return _selectedWorkbook; } 
-            set { _selectedWorkbook = value; NotifyOfPropertyChange(() => SelectedWorkbook); } 
+        public string SelectedWorkbook
+        {
+            get { return _selectedWorkbook; }
+            set { _selectedWorkbook = value; NotifyOfPropertyChange(() => SelectedWorkbook); }
         }
 
-        public void CopyingRowClipboardContent(DataGrid source, DataGridRowClipboardEventArgs e)
+        private bool ShouldCopyHeader;
+        public void CopyWithHeaders(RoutedEventArgs args)
         {
-            System.Diagnostics.Debug.WriteLine(e.ClipboardRowContent[0]);
+            ShouldCopyHeader = true;
+            CheckSelectionAndCopy(args.Source);
+        }
+
+        public void CopyData(RoutedEventArgs args)
+        {
+            ShouldCopyHeader = false;
+            CheckSelectionAndCopy(args.Source);
+        }
+
+        private void CheckSelectionAndCopy(object source)
+        {
+            var selectionSet = false;
+            if (source == null) return;
+            if (source is MenuItem menu)
+            {
+                if (menu.Parent is ContextMenu ctxMenu)
+                {
+                    if (ctxMenu.PlacementTarget is DataGrid grid)
+                    {
+                        if (grid.SelectedCells.Count == 0)
+                        {
+                            // if this is a grid and nothing is selected
+                            // then select all cells
+                            grid.SelectAllCells();
+                            grid.Focus();
+                            selectionSet = true;
+                        }
+
+                        ApplicationCommands.Copy.Execute(null, null);
+
+                        if (selectionSet)
+                        {
+                            // if we set the selection as part of the copy command 
+                            // then we should clear it
+                            grid.SelectedCells.Clear();
+                        }
+                    }
+                }
+            }
+
+
+        }
+
+        public void CopyingRowClipboardContent(object sender, DataGridRowClipboardEventArgs e)
+        {
+
+            System.Diagnostics.Debug.WriteLine("Clipboard Copy Content");
+            if (e.IsColumnHeadersRow)
+            {
+                if (ShouldCopyHeader)
+                {
+                    ShouldCopyHeader = false;
+                }
+                else
+                {
+                    e.ClipboardRowContent.Clear();
+                }
+            }
+
         }
         public void ResizeGridColumns(DataGrid source, MouseButtonEventArgs e)
         {
             System.Diagnostics.Debug.WriteLine("DoubleClick fired");
             string dataContext = string.Empty;
-            if (e.OriginalSource is TextBlock) { dataContext = ((TextBlock)e.OriginalSource).DataContext as string; }
-            if (e.OriginalSource is Border) { dataContext = ((Border)e.OriginalSource).DataContext as string; }
+            if (e.OriginalSource is TextBlock block) { dataContext = block.DataContext as string; }
+            if (e.OriginalSource is Border border) { dataContext = border.DataContext as string; }
 
             if (!string.IsNullOrEmpty(dataContext))
             {
@@ -303,26 +369,26 @@ namespace DaxStudio.UI.ViewModels
                 }
             }
 
-            
+
 
             if (e.OriginalSource is System.Windows.Shapes.Rectangle)
             {
                 if (source.ColumnWidth.UnitType != DataGridLengthUnitType.SizeToCells)
                 {
                     source.ColumnWidth = new DataGridLength(1.0, DataGridLengthUnitType.SizeToCells);
-                    SetAllColumnWidths(source, DataGridLengthUnitType.SizeToCells,50.0);
+                    SetAllColumnWidths(source, DataGridLengthUnitType.SizeToCells, 50.0);
                 }
                 else
                 {
                     source.ColumnWidth = new DataGridLength(1.0, DataGridLengthUnitType.Auto);
-                    SetAllColumnWidths(source, DataGridLengthUnitType.Auto,0);
+                    SetAllColumnWidths(source, DataGridLengthUnitType.Auto, 0);
                 }
             }
         }
 
         private void SetAllColumnWidths(DataGrid source, DataGridLengthUnitType lengthType, double minWidth)
         {
-            for (int i=0;i < source.Columns.Count;i++)
+            for (int i = 0; i < source.Columns.Count; i++)
             {
                 source.Columns[i].Width = new DataGridLength(1.0, lengthType);
                 source.Columns[i].MinWidth = minWidth;
@@ -335,20 +401,21 @@ namespace DaxStudio.UI.ViewModels
             {
                 dataGridColumn.Width = new DataGridLength(1.0, DataGridLengthUnitType.SizeToCells);
                 dataGridColumn.MinWidth = 50.0;
-            } else
+            }
+            else
             {
                 dataGridColumn.Width = new DataGridLength(1.0, DataGridLengthUnitType.Auto);
                 dataGridColumn.MinWidth = 0;
             }
         }
 
-        public Brush TabItemBrush
-        {
-            get
-            {
-                return  (Brush)GetValueFromStyle(typeof(TabItem), Control.BackgroundProperty) ?? Brushes.LightSkyBlue;
-            }
-        }
+        //public System.Windows.Media.Brush TabItemBrush
+        //{
+        //    get
+        //    {
+        //        return  (System.Windows.Media.Brush)GetValueFromStyle(typeof(TabItem), Control.BackgroundProperty) ?? System.Windows.Media.Brushes.LightSkyBlue;
+        //    }
+        //}
 
         private static object GetValueFromStyle(object styleKey, DependencyProperty property)
         {
@@ -372,27 +439,21 @@ namespace DaxStudio.UI.ViewModels
 
         public UnitViewModel SizeUnits { get; set; }
 
-        public void Handle(UpdateGlobalOptions message)
+        public Task HandleAsync(UpdateGlobalOptions message, CancellationToken cancellationToken)
         {
             UpdateSettings();
+            return Task.CompletedTask;
         }
-        
-        public void Handle(SizeUnitsUpdatedEvent message)
+
+        public Task HandleAsync(SizeUnitsUpdatedEvent message, CancellationToken cancellationToken)
         {
             if (_options.ScaleResultsFontWithEditor)
             {
-                SizeUnits.Value = message.Units.Value;
-                NotifyOfPropertyChange(() => SizeUnits.ScreenPoints);
+                this.Scale = message.Units.Value / 100.0;
+                //SizeUnits.Value = message.Units.Value;
+                //NotifyOfPropertyChange(() => SizeUnits.ScreenPoints);
             }
-        }
-
-        public DataGridClipboardCopyMode ClipboardCopyMode
-        {
-            get
-            {
-                if (_options.ExcludeHeadersWhenCopyingResults) return DataGridClipboardCopyMode.ExcludeHeader;
-                return DataGridClipboardCopyMode.IncludeHeader;
-            }
+            return Task.CompletedTask;
         }
 
         protected override void OnViewLoaded(object view)
@@ -402,18 +463,158 @@ namespace DaxStudio.UI.ViewModels
 
         private void UpdateSettings()
         {
-            NotifyOfPropertyChange(() => ClipboardCopyMode);
 
-            if (FontSize != _options.ResultFontSize)
+            if (FontSize != _options.ResultFontSizePx)
             {
-                FontSize = _options.ResultFontSize;
-                this.SizeUnits.SetOneHundredPercentFontSize(_options.ResultFontSize);
+                FontSize = _options.ResultFontSizePx;
+                this.SizeUnits.SetOneHundredPercentFontSize(_options.ResultFontSizePx);
                 this.SizeUnits.Value = 100;
                 NotifyOfPropertyChange(() => SizeUnits);
             }
             if (FontFamily != _options.ResultFontFamily)
             {
                 FontFamily = _options.ResultFontFamily;
+            }
+        }
+
+        public Task HandleAsync(CopyWithHeadersEvent message, CancellationToken cancellationToken)
+        {
+            if (GridHasFocus)
+            {
+                ShouldCopyHeader = true;
+                ApplicationCommands.Copy.Execute(null, null);
+            }
+            return Task.CompletedTask;
+        }
+
+        private bool _gridHasFocus;
+        public bool GridHasFocus
+        {
+            get => _gridHasFocus;
+            set
+            {
+                _gridHasFocus = value;
+                NotifyOfPropertyChange();
+            }
+        }
+
+        private string _errorMessage;
+        public string ErrorMessage
+        {
+            get => _errorMessage;
+            set
+            {
+                _errorMessage = value;
+                if (!string.IsNullOrWhiteSpace(_errorMessage)) Clear();
+                ErrorLocation = RegexHelper.GetQueryErrorLocation(_errorMessage);
+                NotifyOfPropertyChange();
+                NotifyOfPropertyChange(() => ShowErrorMessage);
+                NotifyOfPropertyChange(() => ShowResultsMessage);
+
+            }
+        }
+        private (int Line, int Column) _errorLocation = (0, 0);
+        public (int Line, int Column) ErrorLocation
+        {
+            get => _errorLocation;
+            set
+            {
+                _errorLocation = value;
+                NotifyOfPropertyChange(nameof(ShowGotoError));
+            }
+        }
+        public bool ShowGotoError { get => ErrorLocation.Line > 0 || ErrorLocation.Column > 0; }
+
+        public void GridGotFocus() { GridHasFocus = true; }
+        public void GridLostFocus() { GridHasFocus = false; }
+
+        public void Clear()
+        {
+            ResultsDataSet?.Tables?.Clear();
+            ShowResultsTable = false;
+            ResultsMessage = "Results Cleared";
+        }
+
+        public void CopyError()
+        {
+            // exit early if the ErrorMessage is emtpty
+            if (string.IsNullOrWhiteSpace(ErrorMessage)) return;
+
+            try
+            {
+                Clipboard.SetText(ErrorMessage);
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Information, "Error message copied to clipboard"));
+            }
+            catch (Exception ex)
+            {
+                var msg = $"Unable to copy error message to clipboard: {ex.Message}";
+                _eventAggregator.PublishAsync(new OutputMessage(MessageType.Error, msg));
+                Log.Error(Constants.LogMessageTemplate, nameof(QueryResultsPaneViewModel), nameof(CopyError), msg);
+            }
+            
+        }
+
+        public bool ShowErrorMessage { get => !string.IsNullOrEmpty(ErrorMessage); }
+        public TextLocation SelectionLocation { get; internal set; }
+        private string _resultsFullFileName;
+        public string ResultsFullFileName { get => _resultsFullFileName; 
+            internal set {
+                _resultsFullFileName = value;
+                var fileInfo = new System.IO.FileInfo(_resultsFullFileName);
+                ResultsFilePath = fileInfo.DirectoryName;
+                NotifyOfPropertyChange();
+            } 
+        }
+
+        private string _resultsFileName;
+        public string ResultsFileName
+        {
+            get => _resultsFileName;
+            internal set
+            {
+                _resultsFileName = value;
+                NotifyOfPropertyChange();
+                NotifyOfPropertyChange(() => ShowOpenFileLocation);
+            }
+        }
+
+        private string _resultsFilePath;
+        public string ResultsFilePath { get => _resultsFilePath; 
+            internal set { 
+                _resultsFilePath = value;
+                if (!_resultsFilePath.EndsWith("\\")) _resultsFilePath += "\\";
+                NotifyOfPropertyChange(); 
+                NotifyOfPropertyChange(() => ShowOpenFileLocation);
+            } 
+        }
+
+        public bool ShowOpenFileLocation { get => !string.IsNullOrEmpty(ResultsFilePath) && System.IO.Directory.Exists(ResultsFilePath); }
+
+        public void GotoError()
+        {
+            if (ErrorLocation.Line >= 0 && ErrorLocation.Column >= 0)
+            {
+                var lineOffset = 0;
+                var columnOffset = 0;
+                if(SelectionLocation.Line > 0 
+                   && SelectionLocation.Column > 0)
+                {
+                    // need to -1 to make the offset 0 based
+                    lineOffset = SelectionLocation.Line-1;
+                    // only offset the column if the error is on line 1
+                    columnOffset = SelectionLocation.Line == 1 ? SelectionLocation.Column -1: 0;
+                }
+                _eventAggregator.PublishAsync(
+                    new NavigateToLocationEvent(ErrorLocation.Line + lineOffset
+                                               , ErrorLocation.Column + columnOffset));
+            }
+        }
+
+        public void OpenResultsFileLocation()
+        {
+            if (!string.IsNullOrEmpty(ResultsFilePath) && System.IO.Directory.Exists(ResultsFilePath))
+            {
+                System.Diagnostics.Process.Start("explorer.exe", ResultsFilePath);
             }
         }
     }

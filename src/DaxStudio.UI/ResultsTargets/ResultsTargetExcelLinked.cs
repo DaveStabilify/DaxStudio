@@ -1,11 +1,13 @@
-﻿using System;
 using System.ComponentModel.Composition;
 using System.Threading.Tasks;
 using DaxStudio.Interfaces;
 using System.Diagnostics;
 using DaxStudio.UI.Interfaces;
 using Caliburn.Micro;
+using DaxStudio.Core.Events;
 using DaxStudio.UI.Events;
+using System.Threading;
+using DaxStudio.Core.Interfaces;
 
 namespace DaxStudio.UI.ResultsTargets
 {
@@ -20,14 +22,14 @@ namespace DaxStudio.UI.ResultsTargets
     {
         private IDaxStudioHost _host;
         private IEventAggregator _eventAggregator;
-        private bool _isPowerBIOrSSDTConnection = false;
+        private bool _isPowerBIOrSSDTConnection;
 
         [ImportingConstructor]
         public ResultsTargetExcelLinked(IDaxStudioHost host, IEventAggregator eventAggregator)
         {
             _host = host;
             _eventAggregator = eventAggregator;
-            _eventAggregator.Subscribe(this);
+            _eventAggregator.SubscribeOnUIThread(this);
         }
 
         #region Standard Properties
@@ -35,63 +37,55 @@ namespace DaxStudio.UI.ResultsTargets
         public string Group => "Excel";
         public bool IsDefault => false;
         public bool IsAvailable => _host.IsExcel && !_isPowerBIOrSSDTConnection;
-        public int DisplayOrder => 100;
+        public int DisplayOrder => 300;
         public string Message => "Query will be sent to Excel for execution";
-        public OutputTargets Icon => OutputTargets.Linked;
-
+        public OutputTarget Icon => OutputTarget.Linked;
+        public string ImageResource => "results_excel_linked_smallDrawingImage";
+        public string Tooltip => "Sends the Query text to Excel for execution";
         public bool IsEnabled => !_isPowerBIOrSSDTConnection;
 
         public string DisabledReason => "Linked Excel output is not supported against Power BI Desktop or SSDT based connections";
 
-        public void Handle(ConnectionChangedEvent message)
+        public async Task HandleAsync(ConnectionChangedEvent message, CancellationToken cancellationToken)
         {
-            _isPowerBIOrSSDTConnection = message.Connection?.IsPowerBIorSSDT ?? false;
+            _isPowerBIOrSSDTConnection = message.IsPowerBIorSSDT;
             NotifyOfPropertyChange(() => IsEnabled);
-            _eventAggregator.PublishOnUIThread(new RefreshOutputTargetsEvent());
+            await _eventAggregator.PublishAsync(new RefreshOutputTargetsEvent());
+            return; 
         }
 
-        public void Handle(ActivateDocumentEvent message)
+        public async Task HandleAsync(ActivateDocumentEvent message, CancellationToken cancellationToken)
         {
             _isPowerBIOrSSDTConnection = message.Document.Connection?.IsPowerBIorSSDT ?? false;
             NotifyOfPropertyChange(() => IsEnabled);
-            _eventAggregator.PublishOnUIThread(new RefreshOutputTargetsEvent());
+            await _eventAggregator.PublishAsync(new RefreshOutputTargetsEvent());
         }
         #endregion
 
-        public Task OutputResultsAsync(IQueryRunner runner)
+        public async Task OutputResultsAsync(IQueryRunner runner, IQueryTextProvider textProvider, string filename)
         {
-            return Task.Run(() =>
+            await Task.Run(async () =>
                 {
-                    try
-                    {
-                        runner.OutputMessage("Query Started");
-                        var sw = Stopwatch.StartNew();
-                        var dq = runner.QueryText;
-                        
-                        //  write results to Excel
-                        runner.Host.Proxy.OutputLinkedResultAsync(dq
-                            , runner.SelectedWorksheet
-                            , runner.ConnectedToPowerPivot?"":runner.ConnectionStringWithInitialCatalog).ContinueWith((ascendant) => {
+                    runner.ClearQueryResults();
+                    var sw = Stopwatch.StartNew();
+                    var dq = textProvider.QueryText;
 
-                                sw.Stop();
-                                var durationMs = sw.ElapsedMilliseconds;
+
+                    //  write results to Excel
+                    await runner.Host.Proxy.OutputLinkedResultAsync(dq
+                        , runner.SelectedWorksheet
+                        , runner.ConnectedToPowerPivot?string.Empty:runner.ConnectionStringWithInitialCatalog);
+
+
+                    sw.Stop();
+                    var durationMs = sw.ElapsedMilliseconds;
                      
-                                runner.OutputMessage(
-                                    string.Format("Query Completed - Query sent to Excel for execution)"), durationMs);
-                                runner.ActivateOutput();
-                                runner.SetResultsMessage("Query sent to Excel for execution", OutputTargets.Linked);
+                    runner.OutputMessage(
+                        string.Format("Query Completed - Query sent to Excel for execution)"), durationMs);
+                    runner.ActivateOutput();
+                    runner.SetResultsMessage("Query sent to Excel for execution", OutputTarget.Linked);
 
-                            },TaskScheduler.Default);
-                    }
-                    catch (Exception ex)
-                    {
-                        runner.ActivateOutput();
-                        runner.OutputError(ex.Message);
-                    }
-                    finally
-                    {
-                        runner.QueryCompleted();
-                    }
+
                 });
         }
 

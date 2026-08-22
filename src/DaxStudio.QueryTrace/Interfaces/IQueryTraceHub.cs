@@ -1,9 +1,5 @@
-﻿using Microsoft.AnalysisServices;
-using System;
+﻿using DaxStudio.Common.Enums;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace DaxStudio.QueryTrace.Interfaces
 {
@@ -14,12 +10,15 @@ namespace DaxStudio.QueryTrace.Interfaces
         void ConfigureTrace(ADOTabular.ADOTabularConnection connection, List<DaxStudioTraceEventClass> events);
 
         void OnTraceError(string message);
-        void OnTraceComplete(IList<DaxStudioTraceEventArgs> capturedEvents);
+        void OnTraceWarning(string message);
+        void OnTraceComplete();
         void OnTraceComplete(DaxStudioTraceEventArgs[] capturedEvents);
+        void OnTraceEvent(DaxStudioTraceEventArgs traceEvent);
         void OnTraceStarting();
         void OnTraceStarted();
         void OnTraceStopped();
         void GetStatus(QueryTraceStatus status);
         void UpdateEvents (List<DaxStudioTraceEventClass> events);
+        void OnPingTrace();
     }
 }
